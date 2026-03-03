@@ -316,7 +316,7 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
     const is_wasi = target.result.os.tag == .wasi;
     const is_static = b.option(bool, "static", "Static build") orelse false;
-    const app_version = b.option([]const u8, "version", "Version string embedded in the binary") orelse "2026.3.6";
+    const app_version = b.option([]const u8, "version", "Version string embedded in the binary") orelse "2026.3.7";
     const channels_raw = b.option(
         []const u8,
         "channels",
@@ -389,6 +389,18 @@ pub fn build(b: *std.Build) void {
         });
         const sqlite3_artifact = sqlite3_dep.artifact("sqlite3");
         sqlite3_artifact.root_module.addCMacro("SQLITE_ENABLE_FTS5", "1");
+        
+        if (target.result.os.tag == .android) {
+            if (std.process.getEnvVarOwned(b.allocator, "ANDROID_NDK_SYSROOT")) |sysroot| {
+                defer b.allocator.free(sysroot);
+                const include_sys = b.fmt("{s}/usr/include", .{sysroot});
+                sqlite3_artifact.root_module.addSystemIncludePath(.{ .cwd_relative = include_sys });
+                const arch_dir = if (target.result.cpu.arch == .aarch64) "aarch64-linux-android" else "arm-linux-androideabi";
+                const include_arch = b.fmt("{s}/usr/include/{s}", .{sysroot, arch_dir});
+                sqlite3_artifact.root_module.addSystemIncludePath(.{ .cwd_relative = include_arch });
+            } else |_| {}
+        }
+
         break :blk sqlite3_artifact;
     } else null;
 

@@ -89,6 +89,7 @@ jobs:
         run: |
           if [[ "${{ matrix.zig_target }}" == *"android"* ]]; then
             export SYSROOT=$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot
+            export ANDROID_NDK_SYSROOT="$SYSROOT"
             zig build -Doptimize=ReleaseSmall -Dtarget=${{ matrix.zig_target }} --sysroot "$SYSROOT"
           else
             zig build -Doptimize=ReleaseSmall ${{ matrix.zig_target && format('-Dtarget={0}', matrix.zig_target) || '' }}
