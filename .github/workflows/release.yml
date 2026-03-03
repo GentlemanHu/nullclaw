@@ -29,11 +29,11 @@ jobs:
         include:
           - os: ubuntu-latest
             target: android-aarch64
-            zig_target: aarch64-linux-musl
+            zig_target: aarch64-linux.3.10-musl
             ext: ""
           - os: ubuntu-latest
             target: android-armv7a
-            zig_target: arm-linux-musleabihf
+            zig_target: arm-linux.3.10-musleabihf
             ext: ""
           - os: ubuntu-latest
             target: linux-x86_64
