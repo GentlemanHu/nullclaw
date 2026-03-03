@@ -316,7 +316,7 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
     const is_wasi = target.result.os.tag == .wasi;
     const is_static = b.option(bool, "static", "Static build") orelse false;
-    const app_version = b.option([]const u8, "version", "Version string embedded in the binary") orelse "2026.3.8";
+    const app_version = b.option([]const u8, "version", "Version string embedded in the binary") orelse "2026.3.9";
     const channels_raw = b.option(
         []const u8,
         "channels",
@@ -389,30 +389,6 @@ pub fn build(b: *std.Build) void {
         });
         const sqlite3_artifact = sqlite3_dep.artifact("sqlite3");
         sqlite3_artifact.root_module.addCMacro("SQLITE_ENABLE_FTS5", "1");
-
-        // When cross-compiling for Android, Zig's bundled libc headers don't
-        // include the Android (Bionic) system headers.  The CI exports
-        // ANDROID_NDK_SYSROOT pointing at the NDK sysroot so we can feed
-        // the correct include paths to the C compiler.
-        if (std.process.getEnvVarOwned(b.allocator, "ANDROID_NDK_SYSROOT")) |sysroot| {
-            defer b.allocator.free(sysroot);
-            // Generic system headers (stdio.h, stdlib.h, …)
-            const include_generic = b.fmt("{s}/usr/include", .{sysroot});
-            sqlite3_artifact.root_module.addSystemIncludePath(.{ .cwd_relative = include_generic });
-            // Architecture-specific headers (asm/*.h, …)
-            const arch_triple: []const u8 = switch (target.result.cpu.arch) {
-                .aarch64 => "aarch64-linux-android",
-                .arm, .thumb => "arm-linux-androideabi",
-                .x86_64 => "x86_64-linux-android",
-                .x86 => "i686-linux-android",
-                else => "",
-            };
-            if (arch_triple.len > 0) {
-                const include_arch = b.fmt("{s}/usr/include/{s}", .{ sysroot, arch_triple });
-                sqlite3_artifact.root_module.addSystemIncludePath(.{ .cwd_relative = include_arch });
-            }
-        } else |_| {}
-
         break :blk sqlite3_artifact;
     } else null;
 

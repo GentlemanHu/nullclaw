@@ -29,11 +29,11 @@ jobs:
         include:
           - os: ubuntu-latest
             target: android-aarch64
-            zig_target: aarch64-linux-android
+            zig_target: aarch64-linux-musl
             ext: ""
           - os: ubuntu-latest
             target: android-armv7a
-            zig_target: arm-linux-androideabi
+            zig_target: arm-linux-musleabihf
             ext: ""
           - os: ubuntu-latest
             target: linux-x86_64
@@ -71,7 +71,7 @@ jobs:
         id: check
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.build_target }}" != "all" ]; then
-            if [[ ! "${{ matrix.target }}" == *"${{ inputs.build_target }}"* ]] && [[ ! ("${{ inputs.build_target }}" == "android" && "${{ matrix.zig_target }}" == *"android"*) ]]; then
+            if [[ ! "${{ matrix.target }}" == *"${{ inputs.build_target }}"* ]]; then
               echo "skip=true" >> $GITHUB_ENV
               exit 0
             fi
@@ -86,14 +86,7 @@ jobs:
 
       - name: Build ReleaseSmall
         if: env.skip != 'true'
-        run: |
-          if [[ "${{ matrix.zig_target }}" == *"android"* ]]; then
-            export SYSROOT=$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot
-            export ANDROID_NDK_SYSROOT="$SYSROOT"
-            zig build -Doptimize=ReleaseSmall -Dtarget=${{ matrix.zig_target }} --sysroot "$SYSROOT"
-          else
-            zig build -Doptimize=ReleaseSmall ${{ matrix.zig_target && format('-Dtarget={0}', matrix.zig_target) || '' }}
-          fi
+        run: zig build -Doptimize=ReleaseSmall ${{ matrix.zig_target && format('-Dtarget={0}', matrix.zig_target) || '' }}
 
       - name: Upload artifact
         if: env.skip != 'true'
