@@ -86,7 +86,13 @@ jobs:
 
       - name: Build ReleaseSmall
         if: env.skip != 'true'
-        run: zig build -Doptimize=ReleaseSmall ${{ matrix.zig_target && format('-Dtarget={0}', matrix.zig_target) || '' }}
+        run: |
+          if [[ "${{ matrix.zig_target }}" == *"android"* ]]; then
+            export SYSROOT=$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot
+            zig build -Doptimize=ReleaseSmall -Dtarget=${{ matrix.zig_target }} --sysroot "$SYSROOT"
+          else
+            zig build -Doptimize=ReleaseSmall ${{ matrix.zig_target && format('-Dtarget={0}', matrix.zig_target) || '' }}
+          fi
 
       - name: Upload artifact
         if: env.skip != 'true'
