@@ -22,14 +22,7 @@ jobs:
     name: Build (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
     # 动态过滤: Tag 自动构建全部; 否则按需构架
-    if: >
-      github.event_name == 'push' || (
-        github.event_name == 'workflow_dispatch' && (
-          github.event.inputs.build_target == 'all' ||
-          contains(matrix.target, github.event.inputs.build_target) ||
-          (github.event.inputs.build_target == 'android' && contains(matrix.zig_target, 'android'))
-        )
-      )
+    if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && (inputs.build_target == 'all' || contains(matrix.target, inputs.build_target) || (inputs.build_target == 'android' && contains(matrix.zig_target, 'android')))) }}
     defaults:
       run:
         shell: bash
@@ -96,7 +89,7 @@ jobs:
     permissions:
       contents: write
     # 仅 Tag 或手动时都可以打包（根据触发类型处理）
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
 
     steps:
       - uses: actions/download-artifact@v4
