@@ -6,16 +6,16 @@ const yc = @import("nullclaw");
 /// Override Zig's default crypto random seed to avoid getrandom() panic on
 /// older Linux kernels (< 3.17) that lack the SYS_getrandom syscall.
 /// Reads directly from /dev/urandom which is universally available.
-pub const std_options: std.Options = .{
+pub const std_options: std.Options = if (builtin.os.tag == .linux) .{
     .crypto_always_getrandom = false,
-    .cryptoRandomSeedFn = if (builtin.os.tag == .linux) linuxUrandomSeed else null,
-};
+    .cryptoRandomSeed = linuxUrandomSeed,
+} else .{};
 
-fn linuxUrandomSeed(buffer: *[std.Random.DefaultCsprng.secret_seed_length]u8) void {
+fn linuxUrandomSeed(buffer: []u8) void {
     const fd = std.posix.open("/dev/urandom", .{ .ACCMODE = .RDONLY }, 0) catch
         @panic("failed to open /dev/urandom");
     defer std.posix.close(fd);
-    var remaining: []u8 = buffer;
+    var remaining = buffer;
     while (remaining.len > 0) {
         const n = std.posix.read(fd, remaining) catch
             @panic("failed to read /dev/urandom");
