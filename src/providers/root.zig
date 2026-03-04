@@ -7,6 +7,7 @@ pub const anthropic = @import("anthropic.zig");
 pub const openai = @import("openai.zig");
 pub const ollama = @import("ollama.zig");
 pub const gemini = @import("gemini.zig");
+pub const vertex = @import("vertex.zig");
 pub const openrouter = @import("openrouter.zig");
 pub const compatible = @import("compatible.zig");
 pub const reliable = @import("reliable.zig");

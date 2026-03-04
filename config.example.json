@@ -5,6 +5,10 @@
     "providers": {
       "openrouter": {
         "api_key": "YOUR_OPENROUTER_API_KEY"
+      },
+      "vertex": {
+        "api_key": "YOUR_VERTEX_OAUTH_TOKEN",
+        "base_url": "https://aiplatform.googleapis.com/v1/projects/YOUR_GCP_PROJECT/locations/global/publishers/google/models"
       }
     }
   },

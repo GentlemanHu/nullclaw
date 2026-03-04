@@ -95,6 +95,7 @@ pub fn providerUrl(provider_name: []const u8) []const u8 {
         .{ "ollama", "http://localhost:11434/api/chat" },
         .{ "gemini", "https://generativelanguage.googleapis.com/v1beta" },
         .{ "google", "https://generativelanguage.googleapis.com/v1beta" },
+        .{ "vertex", "https://aiplatform.googleapis.com/v1" },
     });
     return map.get(provider_name) orelse "https://openrouter.ai/api/v1/chat/completions";
 }

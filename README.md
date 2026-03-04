@@ -18,7 +18,7 @@
 The smallest fully autonomous AI assistant infrastructure — a static Zig binary that fits on any $5 board, boots in milliseconds, and requires nothing but libc.
 
 ```
-678 KB binary · <2 ms startup · 3,230+ tests · 22+ providers · 18 channels · Pluggable everything
+678 KB binary · <2 ms startup · 3,230+ tests · 23+ providers · 18 channels · Pluggable everything
 ```
 
 ### Features
@@ -27,7 +27,7 @@ The smallest fully autonomous AI assistant infrastructure — a static Zig binar
 - **Near-Zero Memory:** ~1 MB peak RSS. Runs comfortably on the cheapest ARM SBCs and microcontrollers.
 - **Instant Startup:** <2 ms on Apple Silicon, <8 ms on a 0.8 GHz edge core.
 - **True Portability:** Single self-contained binary across ARM, x86, and RISC-V. Drop it anywhere, it just runs.
-- **Feature-Complete:** 22+ providers, 18 channels, 18+ tools, hybrid vector+FTS5 memory, multi-layer sandbox, tunnels, hardware peripherals, MCP, subagents, streaming, voice — the full stack.
+- **Feature-Complete:** 23+ providers, 18 channels, 18+ tools, hybrid vector+FTS5 memory, multi-layer sandbox, tunnels, hardware peripherals, MCP, subagents, streaming, voice — the full stack.
 
 ### Why nullclaw
 
@@ -170,7 +170,7 @@ Every subsystem is a **vtable interface** — swap implementations with a config
 
 | Subsystem | Interface | Ships with | Extend |
 |-----------|-----------|------------|--------|
-| **AI Models** | `Provider` | 22+ providers (OpenRouter, Anthropic, OpenAI, Ollama, Venice, Groq, Mistral, xAI, DeepSeek, Together, Fireworks, Perplexity, Cohere, Bedrock, etc.) | `custom:https://your-api.com` — any OpenAI-compatible API |
+| **AI Models** | `Provider` | 23+ providers (OpenRouter, Anthropic, OpenAI, Gemini, Vertex AI, Ollama, Venice, Groq, Mistral, xAI, DeepSeek, Together, Fireworks, Perplexity, Cohere, Bedrock, etc.) | `custom:https://your-api.com` — any OpenAI-compatible API |
 | **Channels** | `Channel` | CLI, Telegram, Signal, Discord, Slack, iMessage, Matrix, WhatsApp, Webhook, IRC, Lark/Feishu, OneBot, Line, DingTalk, Email, Nostr, QQ, MaixCam, Mattermost | Any messaging API |
 | **Memory** | `Memory` | SQLite with hybrid search (FTS5 + vector cosine similarity), Markdown | Any persistence backend |
 | **Tools** | `Tool` | shell, file_read, file_write, file_edit, memory_store, memory_recall, memory_forget, browser_open, screenshot, composio, http_request, hardware_info, hardware_memory, pushover, and more | Any capability |
@@ -262,6 +262,8 @@ Config: `~/.nullclaw/config.json` (created by `onboard`)
 
 > **OpenClaw compatible:** nullclaw uses the same config structure as [OpenClaw](https://github.com/openclaw/openclaw) (snake_case). Providers live under `models.providers`, the default model under `agents.defaults.model.primary`, and channels use `accounts` wrappers.
 > Top-level `default_provider` / `default_model` keys are not supported.
+>
+> **Vertex AI note:** set `models.providers.vertex.base_url` to the Vertex Gemini models path (`.../projects/<id>/locations/<loc>/publishers/google/models`) and use a bearer token in `api_key` (or `VERTEX_API_KEY`/`VERTEX_OAUTH_TOKEN` env vars).
 
 ```json
 {
@@ -271,6 +273,10 @@ Config: `~/.nullclaw/config.json` (created by `onboard`)
     "providers": {
       "openrouter": { "api_key": "sk-or-..." },
       "groq": { "api_key": "gsk_..." },
+      "vertex": {
+        "api_key": "ya29.your-oauth-token",
+        "base_url": "https://aiplatform.googleapis.com/v1/projects/your-project/locations/global/publishers/google/models"
+      },
       "anthropic": { "api_key": "sk-ant-...", "base_url": "https://api.anthropic.com" }
     }
   },
@@ -572,7 +578,7 @@ src/
   daemon.zig            Daemon supervisor with exponential backoff
   gateway.zig           HTTP gateway (rate limiting, idempotency, pairing)
   channels/             19 channel implementations (telegram, signal, discord, slack, nostr, matrix, whatsapp, line, lark, onebot, mattermost, qq, ...)
-  providers/            22+ AI provider implementations
+  providers/            23+ AI provider implementations
   memory/               SQLite backend, embeddings, vector search, hygiene, snapshots
   tools/                18 tool implementations
   security/             Secrets (ChaCha20), sandbox backends (landlock, firejail, ...)
