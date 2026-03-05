@@ -6,6 +6,7 @@ const ToolResult = root.ToolResult;
 const JsonObjectMap = root.JsonObjectMap;
 const isResolvedPathAllowed = @import("path_security.zig").isResolvedPathAllowed;
 const SecurityPolicy = @import("../security/policy.zig").SecurityPolicy;
+const json_miniparse = @import("../json_miniparse.zig");
 const UNAVAILABLE_WORKSPACE_SENTINEL = "/__nullclaw_workspace_unavailable__";
 
 /// Default maximum shell command execution time (nanoseconds).
@@ -16,6 +17,31 @@ const DEFAULT_MAX_OUTPUT_BYTES: usize = 1_048_576;
 const SAFE_ENV_VARS = [_][]const u8{
     "PATH", "HOME", "TERM", "LANG", "LC_ALL", "LC_CTYPE", "USER", "SHELL", "TMPDIR",
 };
+
+fn normalizeCommandInput(command: []const u8) []const u8 {
+    const trimmed = std.mem.trim(u8, command, " \t\r\n");
+    if (unwrapMarkdownFence(trimmed)) |unfenced| {
+        return std.mem.trim(u8, unfenced, " \t\r\n");
+    }
+    return trimmed;
+}
+
+fn unwrapMarkdownFence(command: []const u8) ?[]const u8 {
+    if (!std.mem.startsWith(u8, command, "```")) return null;
+    const after_open = command[3..];
+    const close_idx = std.mem.lastIndexOf(u8, after_open, "```") orelse return null;
+    const trailing = std.mem.trim(u8, after_open[close_idx + 3 ..], " \t\r\n");
+    if (trailing.len != 0) return null;
+
+    const fenced_body = after_open[0..close_idx];
+    const content = if (std.mem.indexOfScalar(u8, fenced_body, '\n')) |first_newline|
+        fenced_body[first_newline + 1 ..]
+    else
+        fenced_body;
+    const trimmed_content = std.mem.trim(u8, content, " \t\r\n");
+    if (trimmed_content.len == 0) return null;
+    return trimmed_content;
+}
 
 /// Shell command execution tool with workspace scoping.
 pub const ShellTool = struct {
@@ -42,8 +68,9 @@ pub const ShellTool = struct {
 
     pub fn execute(self: *ShellTool, allocator: std.mem.Allocator, args: JsonObjectMap) !ToolResult {
         // Parse the command from the pre-parsed JSON object
-        const command = root.getString(args, "command") orelse
+        const command_input = root.getString(args, "command") orelse
             return ToolResult.fail("Missing 'command' parameter");
+        const command = normalizeCommandInput(command_input);
 
         // Validate command against security policy
         if (self.policy) |pol| {
@@ -119,66 +146,17 @@ pub const ShellTool = struct {
 /// Extract a string field value from a JSON blob (minimal parser — no allocations).
 /// NOTE: Prefer root.getString() with pre-parsed ObjectMap for tool implementations.
 pub fn parseStringField(json: []const u8, key: []const u8) ?[]const u8 {
-    // Find "key": "value"
-    // Build the search pattern: "key":"  or "key" : "
-    var needle_buf: [256]u8 = undefined;
-    const quoted_key = std.fmt.bufPrint(&needle_buf, "\"{s}\"", .{key}) catch return null;
-
-    const key_pos = std.mem.indexOf(u8, json, quoted_key) orelse return null;
-    const after_key = json[key_pos + quoted_key.len ..];
-
-    // Skip whitespace and colon
-    var i: usize = 0;
-    while (i < after_key.len and (after_key[i] == ' ' or after_key[i] == ':' or after_key[i] == '\t' or after_key[i] == '\n')) : (i += 1) {}
-
-    if (i >= after_key.len or after_key[i] != '"') return null;
-    i += 1; // skip opening quote
-
-    // Find closing quote (handle escaped quotes)
-    const start = i;
-    while (i < after_key.len) : (i += 1) {
-        if (after_key[i] == '\\' and i + 1 < after_key.len) {
-            i += 1; // skip escaped char
-            continue;
-        }
-        if (after_key[i] == '"') {
-            return after_key[start..i];
-        }
-    }
-    return null;
+    return json_miniparse.parseStringField(json, key);
 }
 
 /// Extract a boolean field value from a JSON blob.
 pub fn parseBoolField(json: []const u8, key: []const u8) ?bool {
-    var needle_buf: [256]u8 = undefined;
-    const quoted_key = std.fmt.bufPrint(&needle_buf, "\"{s}\"", .{key}) catch return null;
-    const key_pos = std.mem.indexOf(u8, json, quoted_key) orelse return null;
-    const after_key = json[key_pos + quoted_key.len ..];
-
-    var i: usize = 0;
-    while (i < after_key.len and (after_key[i] == ' ' or after_key[i] == ':' or after_key[i] == '\t' or after_key[i] == '\n')) : (i += 1) {}
-
-    if (i + 4 <= after_key.len and std.mem.eql(u8, after_key[i..][0..4], "true")) return true;
-    if (i + 5 <= after_key.len and std.mem.eql(u8, after_key[i..][0..5], "false")) return false;
-    return null;
+    return json_miniparse.parseBoolField(json, key);
 }
 
 /// Extract an integer field value from a JSON blob.
 pub fn parseIntField(json: []const u8, key: []const u8) ?i64 {
-    var needle_buf: [256]u8 = undefined;
-    const quoted_key = std.fmt.bufPrint(&needle_buf, "\"{s}\"", .{key}) catch return null;
-    const key_pos = std.mem.indexOf(u8, json, quoted_key) orelse return null;
-    const after_key = json[key_pos + quoted_key.len ..];
-
-    var i: usize = 0;
-    while (i < after_key.len and (after_key[i] == ' ' or after_key[i] == ':' or after_key[i] == '\t' or after_key[i] == '\n')) : (i += 1) {}
-
-    const start = i;
-    if (i < after_key.len and after_key[i] == '-') i += 1;
-    while (i < after_key.len and after_key[i] >= '0' and after_key[i] <= '9') : (i += 1) {}
-    if (i == start) return null;
-
-    return std.fmt.parseInt(i64, after_key[start..i], 10) catch null;
+    return json_miniparse.parseIntField(json, key);
 }
 
 // ── Tests ───────────────────────────────────────────────────────────
@@ -441,6 +419,55 @@ test "shell wildcard policy permits command outside default allowlist" {
     defer if (result.output.len > 0) std.testing.allocator.free(result.output);
     defer if (result.error_msg) |e| std.testing.allocator.free(e);
     try std.testing.expect(result.success);
+}
+
+test "shell accepts markdown-fenced command payload" {
+    const builtin = @import("builtin");
+    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
+
+    const policy_mod = @import("../security/policy.zig");
+    var tracker = policy_mod.RateTracker.init(std.testing.allocator, 1000);
+    defer tracker.deinit();
+    var policy = policy_mod.SecurityPolicy{
+        .autonomy = .full,
+        .workspace_dir = "/tmp",
+        .allowed_commands = &.{"*"},
+        .block_high_risk_commands = false,
+        .require_approval_for_medium_risk = false,
+        .tracker = &tracker,
+    };
+
+    var st = ShellTool{ .workspace_dir = "/tmp", .policy = &policy };
+    const parsed = try root.parseTestArgs("{\"command\": \"```bash\\necho fenced\\n```\"}");
+    defer parsed.deinit();
+    const result = try st.execute(std.testing.allocator, parsed.value.object);
+    defer if (result.output.len > 0) std.testing.allocator.free(result.output);
+    defer if (result.error_msg) |e| std.testing.allocator.free(e);
+    try std.testing.expect(result.success);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "fenced") != null);
+}
+
+test "shell keeps subshell backticks blocked after fenced markdown normalization" {
+    const policy_mod = @import("../security/policy.zig");
+    var tracker = policy_mod.RateTracker.init(std.testing.allocator, 1000);
+    defer tracker.deinit();
+    var policy = policy_mod.SecurityPolicy{
+        .autonomy = .full,
+        .workspace_dir = "/tmp",
+        .allowed_commands = &.{"*"},
+        .block_high_risk_commands = false,
+        .require_approval_for_medium_risk = false,
+        .tracker = &tracker,
+    };
+
+    var st = ShellTool{ .workspace_dir = "/tmp", .policy = &policy };
+    const parsed = try root.parseTestArgs("{\"command\": \"```bash\\necho `whoami`\\n```\"}");
+    defer parsed.deinit();
+    const result = try st.execute(std.testing.allocator, parsed.value.object);
+    defer if (result.output.len > 0) std.testing.allocator.free(result.output);
+    try std.testing.expect(!result.success);
+    try std.testing.expect(result.error_msg != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.error_msg.?, "Command not allowed") != null);
 }
 
 test "shell without policy executes command" {

@@ -124,7 +124,7 @@ fn parseMaxCharsWithDefault(args: JsonObjectMap, default: usize) usize {
 fn shouldUseCurlResolve(host: []const u8) bool {
     // DNS pinning is required for hostname-based URLs. IPv6 literals do not
     // involve DNS and don't fit curl's host:port `--resolve` syntax cleanly.
-    return std.mem.indexOfScalar(u8, stripHostBrackets(host), ':') == null;
+    return std.mem.indexOfScalar(u8, net_security.stripHostBrackets(host), ':') == null;
 }
 
 fn buildCurlResolveEntry(
@@ -133,7 +133,7 @@ fn buildCurlResolveEntry(
     port: u16,
     connect_host: []const u8,
 ) ![]u8 {
-    const host_for_resolve = stripHostBrackets(host);
+    const host_for_resolve = net_security.stripHostBrackets(host);
     const connect_target = if (std.mem.indexOfScalar(u8, connect_host, ':') != null)
         try std.fmt.allocPrint(allocator, "[{s}]", .{connect_host})
     else
@@ -141,13 +141,6 @@ fn buildCurlResolveEntry(
     defer allocator.free(connect_target);
 
     return std.fmt.allocPrint(allocator, "{s}:{d}:{s}", .{ host_for_resolve, port, connect_target });
-}
-
-fn stripHostBrackets(host: []const u8) []const u8 {
-    if (std.mem.startsWith(u8, host, "[") and std.mem.endsWith(u8, host, "]")) {
-        return host[1 .. host.len - 1];
-    }
-    return host;
 }
 
 /// Convert HTML to readable text with basic markdown formatting.
