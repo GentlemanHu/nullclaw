@@ -478,6 +478,7 @@ fn buildChatRequestBody(
             try root.convertToolsAnthropic(&buf, allocator, tools);
         }
     }
+    try appendAnthropicThinkingConfig(&buf, allocator, max_tokens, request.reasoning_effort);
 
     try buf.append(allocator, '}');
     return try buf.toOwnedSlice(allocator);
@@ -544,9 +545,35 @@ fn buildStreamingChatRequestBody(
             try root.convertToolsAnthropic(&buf, allocator, tools);
         }
     }
+    try appendAnthropicThinkingConfig(&buf, allocator, max_tokens, request.reasoning_effort);
 
     try buf.appendSlice(allocator, ",\"stream\":true}");
     return try buf.toOwnedSlice(allocator);
+}
+
+fn appendAnthropicThinkingConfig(
+    buf: *std.ArrayListUnmanaged(u8),
+    allocator: std.mem.Allocator,
+    max_tokens: u32,
+    reasoning_effort: ?[]const u8,
+) !void {
+    const effort = root.normalizeOpenAiReasoningEffort(reasoning_effort) orelse return;
+    if (std.ascii.eqlIgnoreCase(effort, "none")) return;
+
+    // Anthropic extended thinking requires a budget. Keep a conservative floor
+    // and never exceed output budget.
+    const budget: u32 = if (std.ascii.eqlIgnoreCase(effort, "low"))
+        @min(max_tokens, 1024)
+    else if (std.ascii.eqlIgnoreCase(effort, "medium"))
+        @min(max_tokens, 4096)
+    else
+        @min(max_tokens, 8192);
+
+    try buf.appendSlice(allocator, ",\"thinking\":{\"type\":\"enabled\",\"budget_tokens\":");
+    var budget_buf: [16]u8 = undefined;
+    const budget_str = std.fmt.bufPrint(&budget_buf, "{d}", .{budget}) catch return error.AnthropicApiError;
+    try buf.appendSlice(allocator, budget_str);
+    try buf.append(allocator, '}');
 }
 
 /// HTTP POST with OAuth-specific headers (anthropic-beta, user-agent).
@@ -960,6 +987,39 @@ test "buildChatRequestBody defaults max_tokens to runtime fallback" {
     const max_tokens = parsed.value.object.get("max_tokens").?;
     try std.testing.expect(max_tokens == .integer);
     try std.testing.expectEqual(@as(i64, config_types.DEFAULT_MODEL_MAX_TOKENS), max_tokens.integer);
+}
+
+test "buildChatRequestBody emits thinking config when reasoning_effort is set" {
+    const allocator = std.testing.allocator;
+    const msgs = [_]ChatMessage{
+        .{ .role = .user, .content = "hello" },
+    };
+    const req = ChatRequest{
+        .messages = &msgs,
+        .reasoning_effort = "high",
+    };
+
+    const body = try buildChatRequestBody(allocator, req, "claude-3-opus", 0.7);
+    defer allocator.free(body);
+
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"thinking\":{\"type\":\"enabled\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"budget_tokens\":") != null);
+}
+
+test "buildChatRequestBody omits thinking config when reasoning_effort is none" {
+    const allocator = std.testing.allocator;
+    const msgs = [_]ChatMessage{
+        .{ .role = .user, .content = "hello" },
+    };
+    const req = ChatRequest{
+        .messages = &msgs,
+        .reasoning_effort = "none",
+    };
+
+    const body = try buildChatRequestBody(allocator, req, "claude-3-opus", 0.7);
+    defer allocator.free(body);
+
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"thinking\"") == null);
 }
 
 test "buildStreamingChatRequestBody contains same messages as non-streaming" {
