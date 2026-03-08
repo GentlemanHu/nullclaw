@@ -2522,6 +2522,20 @@ test "json parse autonomy allowed_paths" {
     allocator.free(cfg.autonomy.allowed_paths);
 }
 
+test "json parse tools.path_env_vars" {
+    const allocator = std.testing.allocator;
+    const json =
+        \\{"tools": {"path_env_vars": ["LD_LIBRARY_PATH", "PYTHONHOME"]}}
+    ;
+    var cfg = Config{ .workspace_dir = "/tmp/yc", .config_path = "/tmp/yc/config.json", .allocator = allocator };
+    try cfg.parseJson(json);
+    try std.testing.expectEqual(@as(usize, 2), cfg.tools.path_env_vars.len);
+    try std.testing.expectEqualStrings("LD_LIBRARY_PATH", cfg.tools.path_env_vars[0]);
+    try std.testing.expectEqualStrings("PYTHONHOME", cfg.tools.path_env_vars[1]);
+    for (cfg.tools.path_env_vars) |p| allocator.free(p);
+    allocator.free(cfg.tools.path_env_vars);
+}
+
 test "json parse autonomy allow_raw_url_chars" {
     const allocator = std.testing.allocator;
     const json =
