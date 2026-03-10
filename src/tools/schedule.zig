@@ -42,10 +42,24 @@ pub const ScheduleTool = struct {
         const action = root.getString(args, "action") orelse
             return ToolResult.fail("Missing 'action' parameter");
 
+        const explicit_channel = root.getString(args, "channel");
+        const explicit_account_id = root.getString(args, "account_id");
+        const explicit_chat_id = root.getString(args, "chat_id");
+
         // Prefer explicit args; otherwise use per-thread context injected by channel_loop.
-        const chat_id = root.getString(args, "chat_id") orelse tls_schedule_chat_id;
-        const delivery_channel = root.getString(args, "channel") orelse tls_schedule_channel orelse "telegram";
-        const delivery_account_id = root.getString(args, "account_id") orelse tls_schedule_account_id;
+        const chat_id = explicit_chat_id orelse tls_schedule_chat_id;
+        const delivery_channel = explicit_channel orelse tls_schedule_channel orelse "telegram";
+        const delivery_account_id = explicit_account_id orelse tls_schedule_account_id;
+
+        if (explicit_channel) |channel| {
+            if (explicit_chat_id == null and tls_schedule_chat_id != null) {
+                if (tls_schedule_channel) |current_channel| {
+                    if (!std.mem.eql(u8, channel, current_channel)) {
+                        return ToolResult.fail("When overriding 'channel', also provide 'chat_id' for the target conversation");
+                    }
+                }
+            }
+        }
 
         if (std.mem.eql(u8, action, "list")) {
             var scheduler = loadScheduler(allocator) catch {
@@ -286,6 +300,21 @@ test "schedule create with expression" {
     if (result.success) {
         try std.testing.expect(std.mem.indexOf(u8, result.output, "Created job") != null);
     }
+}
+
+test "schedule create rejects cross-channel override without explicit chat_id" {
+    var st = ScheduleTool{};
+    st.setContext("telegram", "main", "chat-123");
+    defer st.setContext(null, null, null);
+
+    const t = st.tool();
+    const parsed = try root.parseTestArgs("{\"action\": \"create\", \"expression\": \"*/5 * * * *\", \"command\": \"echo hello\", \"channel\": \"signal\"}");
+    defer parsed.deinit();
+
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
+
+    try std.testing.expect(!result.success);
+    try std.testing.expect(std.mem.indexOf(u8, result.error_msg.?, "chat_id") != null);
 }
 
 // ── Additional schedule tests ───────────────────────────────────

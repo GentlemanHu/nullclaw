@@ -2052,6 +2052,42 @@ test "save and load roundtrip" {
     try std.testing.expect(loaded[1].one_shot);
 }
 
+test "save and load roundtrip keeps delivery account routing" {
+    var scheduler = CronScheduler.init(std.testing.allocator, 10, true);
+    defer scheduler.deinit();
+
+    const job = try scheduler.addJob("*/10 * * * *", "echo routed");
+    if (scheduler.getMutableJob(job.id)) |mutable_job| {
+        mutable_job.delivery = .{
+            .mode = .always,
+            .channel = try std.testing.allocator.dupe(u8, "telegram"),
+            .account_id = try std.testing.allocator.dupe(u8, "backup"),
+            .to = try std.testing.allocator.dupe(u8, "chat-42"),
+            .channel_owned = true,
+            .account_id_owned = true,
+            .to_owned = true,
+        };
+    } else {
+        return error.TestUnexpectedResult;
+    }
+
+    try saveJobs(&scheduler);
+
+    var loaded = CronScheduler.init(std.testing.allocator, 10, true);
+    defer loaded.deinit();
+    try loadJobsStrict(&loaded);
+
+    try std.testing.expectEqual(@as(usize, 1), loaded.listJobs().len);
+    const loaded_job = loaded.listJobs()[0];
+    try std.testing.expectEqual(DeliveryMode.always, loaded_job.delivery.mode);
+    try std.testing.expect(loaded_job.delivery.channel != null);
+    try std.testing.expectEqualStrings("telegram", loaded_job.delivery.channel.?);
+    try std.testing.expect(loaded_job.delivery.account_id != null);
+    try std.testing.expectEqualStrings("backup", loaded_job.delivery.account_id.?);
+    try std.testing.expect(loaded_job.delivery.to != null);
+    try std.testing.expectEqualStrings("chat-42", loaded_job.delivery.to.?);
+}
+
 test "cliRunJob persists last status and timestamp" {
     var scheduler = CronScheduler.init(std.testing.allocator, 10, true);
     defer scheduler.deinit();
