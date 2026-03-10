@@ -35,72 +35,104 @@ pub const TurnInputPlan = struct {
     llm_user_message: ?[]const u8 = null,
 };
 
-fn slashClearsSession(cmd: SlashCommand) bool {
-    return isSlashName(cmd, "new") or
-        isSlashName(cmd, "reset") or
-        isSlashName(cmd, "restart");
+const SlashCommandKind = enum {
+    new_reset,
+    restart,
+    help,
+    status,
+    whoami,
+    model,
+    think,
+    verbose,
+    reasoning,
+    exec,
+    queue,
+    usage,
+    tts,
+    stop,
+    compact,
+    allowlist,
+    approve,
+    context,
+    export_session,
+    session,
+    subagents,
+    agents,
+    focus,
+    unfocus,
+    kill,
+    steer,
+    tell,
+    config,
+    capabilities,
+    debug,
+    dock_telegram,
+    dock_discord,
+    dock_slack,
+    activation,
+    send,
+    elevated,
+    bash,
+    poll,
+    skill,
+    doctor,
+    memory,
+    unknown,
+};
+
+fn classifySlashCommand(cmd: SlashCommand) SlashCommandKind {
+    if (isSlashName(cmd, "new") or isSlashName(cmd, "reset")) return .new_reset;
+    if (isSlashName(cmd, "restart")) return .restart;
+    if (isSlashName(cmd, "help") or isSlashName(cmd, "commands")) return .help;
+    if (isSlashName(cmd, "status")) return .status;
+    if (isSlashName(cmd, "whoami") or isSlashName(cmd, "id")) return .whoami;
+    if (isSlashName(cmd, "model") or isSlashName(cmd, "models")) return .model;
+    if (isSlashName(cmd, "think") or isSlashName(cmd, "thinking") or isSlashName(cmd, "t")) return .think;
+    if (isSlashName(cmd, "verbose") or isSlashName(cmd, "v")) return .verbose;
+    if (isSlashName(cmd, "reasoning") or isSlashName(cmd, "reason")) return .reasoning;
+    if (isSlashName(cmd, "exec")) return .exec;
+    if (isSlashName(cmd, "queue")) return .queue;
+    if (isSlashName(cmd, "usage")) return .usage;
+    if (isSlashName(cmd, "tts") or isSlashName(cmd, "voice")) return .tts;
+    if (isSlashName(cmd, "stop") or isSlashName(cmd, "abort")) return .stop;
+    if (isSlashName(cmd, "compact")) return .compact;
+    if (isSlashName(cmd, "allowlist")) return .allowlist;
+    if (isSlashName(cmd, "approve")) return .approve;
+    if (isSlashName(cmd, "context")) return .context;
+    if (isSlashName(cmd, "export-session") or isSlashName(cmd, "export")) return .export_session;
+    if (isSlashName(cmd, "session")) return .session;
+    if (isSlashName(cmd, "subagents")) return .subagents;
+    if (isSlashName(cmd, "agents")) return .agents;
+    if (isSlashName(cmd, "focus")) return .focus;
+    if (isSlashName(cmd, "unfocus")) return .unfocus;
+    if (isSlashName(cmd, "kill")) return .kill;
+    if (isSlashName(cmd, "steer")) return .steer;
+    if (isSlashName(cmd, "tell")) return .tell;
+    if (isSlashName(cmd, "config")) return .config;
+    if (isSlashName(cmd, "capabilities")) return .capabilities;
+    if (isSlashName(cmd, "debug")) return .debug;
+    if (isSlashName(cmd, "dock-telegram") or isSlashName(cmd, "dock_telegram")) return .dock_telegram;
+    if (isSlashName(cmd, "dock-discord") or isSlashName(cmd, "dock_discord")) return .dock_discord;
+    if (isSlashName(cmd, "dock-slack") or isSlashName(cmd, "dock_slack")) return .dock_slack;
+    if (isSlashName(cmd, "activation")) return .activation;
+    if (isSlashName(cmd, "send")) return .send;
+    if (isSlashName(cmd, "elevated") or isSlashName(cmd, "elev")) return .elevated;
+    if (isSlashName(cmd, "bash")) return .bash;
+    if (isSlashName(cmd, "poll")) return .poll;
+    if (isSlashName(cmd, "skill")) return .skill;
+    if (isSlashName(cmd, "doctor")) return .doctor;
+    if (isSlashName(cmd, "memory")) return .memory;
+    return .unknown;
 }
 
-fn isLocallyHandledSlashCommand(cmd: SlashCommand) bool {
-    return slashClearsSession(cmd) or
-        isSlashName(cmd, "help") or
-        isSlashName(cmd, "commands") or
-        isSlashName(cmd, "status") or
-        isSlashName(cmd, "whoami") or
-        isSlashName(cmd, "id") or
-        isSlashName(cmd, "model") or
-        isSlashName(cmd, "models") or
-        isSlashName(cmd, "think") or
-        isSlashName(cmd, "thinking") or
-        isSlashName(cmd, "t") or
-        isSlashName(cmd, "verbose") or
-        isSlashName(cmd, "v") or
-        isSlashName(cmd, "reasoning") or
-        isSlashName(cmd, "reason") or
-        isSlashName(cmd, "exec") or
-        isSlashName(cmd, "queue") or
-        isSlashName(cmd, "usage") or
-        isSlashName(cmd, "tts") or
-        isSlashName(cmd, "voice") or
-        isSlashName(cmd, "stop") or
-        isSlashName(cmd, "abort") or
-        isSlashName(cmd, "compact") or
-        isSlashName(cmd, "allowlist") or
-        isSlashName(cmd, "approve") or
-        isSlashName(cmd, "context") or
-        isSlashName(cmd, "export-session") or
-        isSlashName(cmd, "export") or
-        isSlashName(cmd, "session") or
-        isSlashName(cmd, "subagents") or
-        isSlashName(cmd, "agents") or
-        isSlashName(cmd, "focus") or
-        isSlashName(cmd, "unfocus") or
-        isSlashName(cmd, "kill") or
-        isSlashName(cmd, "steer") or
-        isSlashName(cmd, "tell") or
-        isSlashName(cmd, "config") or
-        isSlashName(cmd, "capabilities") or
-        isSlashName(cmd, "debug") or
-        isSlashName(cmd, "dock-telegram") or
-        isSlashName(cmd, "dock_telegram") or
-        isSlashName(cmd, "dock-discord") or
-        isSlashName(cmd, "dock_discord") or
-        isSlashName(cmd, "dock-slack") or
-        isSlashName(cmd, "dock_slack") or
-        isSlashName(cmd, "activation") or
-        isSlashName(cmd, "send") or
-        isSlashName(cmd, "elevated") or
-        isSlashName(cmd, "elev") or
-        isSlashName(cmd, "bash") or
-        isSlashName(cmd, "poll") or
-        isSlashName(cmd, "skill") or
-        isSlashName(cmd, "doctor") or
-        isSlashName(cmd, "memory");
+fn slashCommandClearsSession(kind: SlashCommandKind) bool {
+    return kind == .new_reset or kind == .restart;
 }
 
 pub fn planTurnInput(message: []const u8) TurnInputPlan {
     const cmd = parseSlashCommand(message) orelse return .{ .llm_user_message = message };
-    const clear_session = slashClearsSession(cmd);
+    const kind = classifySlashCommand(cmd);
+    const clear_session = slashCommandClearsSession(kind);
 
     if (bareSessionResetPrompt(message)) |fresh_prompt| {
         return .{
@@ -110,7 +142,7 @@ pub fn planTurnInput(message: []const u8) TurnInputPlan {
         };
     }
 
-    if (isLocallyHandledSlashCommand(cmd)) {
+    if (kind != .unknown) {
         return .{
             .clear_session = clear_session,
             .invoke_local_handler = true,
@@ -2465,107 +2497,97 @@ fn handleDoctorCommand(self: anytype) ![]const u8 {
 
 pub fn handleSlashCommand(self: anytype, message: []const u8) !?[]const u8 {
     const cmd = parseSlashCommand(message) orelse return null;
-
-    if (isSlashName(cmd, "new") or isSlashName(cmd, "reset")) {
-        clearSessionState(self);
-        if (cmd.arg.len > 0) {
-            try setModelName(self, cmd.arg);
-            return try std.fmt.allocPrint(self.allocator, "Session cleared. Switched to model: {s}", .{cmd.arg});
-        }
-        return try self.allocator.dupe(u8, "Session cleared.");
-    }
-
-    if (isSlashName(cmd, "restart")) {
-        clearSessionState(self);
-        resetRuntimeCommandState(self);
-        if (cmd.arg.len > 0) {
-            try setModelName(self, cmd.arg);
-            return try std.fmt.allocPrint(self.allocator, "Session restarted. Switched to model: {s}", .{cmd.arg});
-        }
-        return try self.allocator.dupe(u8, "Session restarted.");
-    }
-
-    if (isSlashName(cmd, "help") or isSlashName(cmd, "commands")) {
-        return try self.allocator.dupe(u8, control_plane.HELP_TEXT);
-    }
-
-    if (isSlashName(cmd, "status")) return try formatStatus(self);
-    if (isSlashName(cmd, "whoami") or isSlashName(cmd, "id")) return try formatWhoAmI(self);
-    if (isSlashName(cmd, "model") or isSlashName(cmd, "models")) {
-        if (cmd.arg.len == 0 or
-            std.ascii.eqlIgnoreCase(cmd.arg, "list") or
-            std.ascii.eqlIgnoreCase(cmd.arg, "status"))
-        {
-            return try self.formatModelStatus();
-        }
-        try setModelName(self, cmd.arg);
-        if (@hasField(@TypeOf(self.*), "default_model")) {
-            self.default_model = self.model_name;
-        }
-        invalidateSystemPromptCache(self);
-        persistSelectedModelToConfig(self, cmd.arg) catch |err| {
-            return try std.fmt.allocPrint(
-                self.allocator,
-                "Switched to model: {s}\nWarning: could not persist model to config.json ({s})",
-                .{ cmd.arg, @errorName(err) },
-            );
-        };
-        return try std.fmt.allocPrint(self.allocator, "Switched to model: {s}", .{cmd.arg});
-    }
-
-    if (isSlashName(cmd, "think") or isSlashName(cmd, "thinking") or isSlashName(cmd, "t")) return try handleThinkCommand(self, cmd.arg);
-    if (isSlashName(cmd, "verbose") or isSlashName(cmd, "v")) return try handleVerboseCommand(self, cmd.arg);
-    if (isSlashName(cmd, "reasoning") or isSlashName(cmd, "reason")) return try handleReasoningCommand(self, cmd.arg);
-    if (isSlashName(cmd, "exec")) return try handleExecCommand(self, cmd.arg);
-    if (isSlashName(cmd, "queue")) return try handleQueueCommand(self, cmd.arg);
-    if (isSlashName(cmd, "usage")) return try handleUsageCommand(self, cmd.arg);
-    if (isSlashName(cmd, "tts") or isSlashName(cmd, "voice")) return try handleTtsCommand(self, cmd.arg);
-    if (isSlashName(cmd, "stop") or isSlashName(cmd, "abort")) return try handleStopCommand(self);
-    if (isSlashName(cmd, "compact")) {
-        if (self.forceCompressHistory()) {
-            return try self.allocator.dupe(u8, "Context compacted.");
-        }
-        return try self.allocator.dupe(u8, "Nothing to compact.");
-    }
-
-    if (isSlashName(cmd, "allowlist")) return try handleAllowlistCommand(self, cmd.arg);
-    if (isSlashName(cmd, "approve")) return try handleApproveCommand(self, cmd.arg);
-    if (isSlashName(cmd, "context")) return try handleContextCommand(self, cmd.arg);
-    if (isSlashName(cmd, "export-session") or isSlashName(cmd, "export")) return try handleExportSessionCommand(self, cmd.arg);
-    if (isSlashName(cmd, "session")) return try handleSessionCommand(self, cmd.arg);
-    if (isSlashName(cmd, "subagents")) return try handleSubagentsCommand(self, cmd.arg);
-    if (isSlashName(cmd, "agents")) return try handleAgentsCommand(self);
-    if (isSlashName(cmd, "focus")) return try handleFocusCommand(self, cmd.arg);
-    if (isSlashName(cmd, "unfocus")) return try handleUnfocusCommand(self);
-    if (isSlashName(cmd, "kill")) return try handleKillCommand(self, cmd.arg);
-    if (isSlashName(cmd, "steer")) return try handleSteerCommand(self, cmd.arg);
-    if (isSlashName(cmd, "tell")) return try handleTellCommand(self, cmd.arg);
-
-    if (isSlashName(cmd, "config")) return try handleConfigCommand(self, cmd.arg);
-    if (isSlashName(cmd, "capabilities")) return try handleCapabilitiesCommand(self, cmd.arg);
-    if (isSlashName(cmd, "debug")) {
-        if (std.ascii.eqlIgnoreCase(cmd.arg, "show") or cmd.arg.len == 0) return try formatStatus(self);
-        if (std.ascii.eqlIgnoreCase(cmd.arg, "reset")) {
+    switch (classifySlashCommand(cmd)) {
+        .new_reset => {
+            clearSessionState(self);
+            if (cmd.arg.len > 0) {
+                try setModelName(self, cmd.arg);
+                return try std.fmt.allocPrint(self.allocator, "Session cleared. Switched to model: {s}", .{cmd.arg});
+            }
+            return try self.allocator.dupe(u8, "Session cleared.");
+        },
+        .restart => {
+            clearSessionState(self);
             resetRuntimeCommandState(self);
-            return try self.allocator.dupe(u8, "Runtime debug state reset.");
-        }
-        return try self.allocator.dupe(u8, "Supported: /debug show|reset");
+            if (cmd.arg.len > 0) {
+                try setModelName(self, cmd.arg);
+                return try std.fmt.allocPrint(self.allocator, "Session restarted. Switched to model: {s}", .{cmd.arg});
+            }
+            return try self.allocator.dupe(u8, "Session restarted.");
+        },
+        .help => return try self.allocator.dupe(u8, control_plane.HELP_TEXT),
+        .status => return try formatStatus(self),
+        .whoami => return try formatWhoAmI(self),
+        .model => {
+            if (cmd.arg.len == 0 or
+                std.ascii.eqlIgnoreCase(cmd.arg, "list") or
+                std.ascii.eqlIgnoreCase(cmd.arg, "status"))
+            {
+                return try self.formatModelStatus();
+            }
+            try setModelName(self, cmd.arg);
+            if (@hasField(@TypeOf(self.*), "default_model")) {
+                self.default_model = self.model_name;
+            }
+            invalidateSystemPromptCache(self);
+            persistSelectedModelToConfig(self, cmd.arg) catch |err| {
+                return try std.fmt.allocPrint(
+                    self.allocator,
+                    "Switched to model: {s}\nWarning: could not persist model to config.json ({s})",
+                    .{ cmd.arg, @errorName(err) },
+                );
+            };
+            return try std.fmt.allocPrint(self.allocator, "Switched to model: {s}", .{cmd.arg});
+        },
+        .think => return try handleThinkCommand(self, cmd.arg),
+        .verbose => return try handleVerboseCommand(self, cmd.arg),
+        .reasoning => return try handleReasoningCommand(self, cmd.arg),
+        .exec => return try handleExecCommand(self, cmd.arg),
+        .queue => return try handleQueueCommand(self, cmd.arg),
+        .usage => return try handleUsageCommand(self, cmd.arg),
+        .tts => return try handleTtsCommand(self, cmd.arg),
+        .stop => return try handleStopCommand(self),
+        .compact => {
+            if (self.forceCompressHistory()) {
+                return try self.allocator.dupe(u8, "Context compacted.");
+            }
+            return try self.allocator.dupe(u8, "Nothing to compact.");
+        },
+        .allowlist => return try handleAllowlistCommand(self, cmd.arg),
+        .approve => return try handleApproveCommand(self, cmd.arg),
+        .context => return try handleContextCommand(self, cmd.arg),
+        .export_session => return try handleExportSessionCommand(self, cmd.arg),
+        .session => return try handleSessionCommand(self, cmd.arg),
+        .subagents => return try handleSubagentsCommand(self, cmd.arg),
+        .agents => return try handleAgentsCommand(self),
+        .focus => return try handleFocusCommand(self, cmd.arg),
+        .unfocus => return try handleUnfocusCommand(self),
+        .kill => return try handleKillCommand(self, cmd.arg),
+        .steer => return try handleSteerCommand(self, cmd.arg),
+        .tell => return try handleTellCommand(self, cmd.arg),
+        .config => return try handleConfigCommand(self, cmd.arg),
+        .capabilities => return try handleCapabilitiesCommand(self, cmd.arg),
+        .debug => {
+            if (std.ascii.eqlIgnoreCase(cmd.arg, "show") or cmd.arg.len == 0) return try formatStatus(self);
+            if (std.ascii.eqlIgnoreCase(cmd.arg, "reset")) {
+                resetRuntimeCommandState(self);
+                return try self.allocator.dupe(u8, "Runtime debug state reset.");
+            }
+            return try self.allocator.dupe(u8, "Supported: /debug show|reset");
+        },
+        .dock_telegram => return try handleDockCommand(self, "telegram"),
+        .dock_discord => return try handleDockCommand(self, "discord"),
+        .dock_slack => return try handleDockCommand(self, "slack"),
+        .activation => return try handleActivationCommand(self, cmd.arg),
+        .send => return try handleSendCommand(self, cmd.arg),
+        .elevated => return try handleElevatedCommand(self, cmd.arg),
+        .bash => return try handleBashCommand(self, cmd.arg),
+        .poll => return try handlePollCommand(self),
+        .skill => return try handleSkillCommand(self, cmd.arg),
+        .doctor => return try handleDoctorCommand(self),
+        .memory => return try handleMemoryCommand(self, cmd.arg),
+        .unknown => return null,
     }
-
-    if (isSlashName(cmd, "dock-telegram") or isSlashName(cmd, "dock_telegram")) return try handleDockCommand(self, "telegram");
-    if (isSlashName(cmd, "dock-discord") or isSlashName(cmd, "dock_discord")) return try handleDockCommand(self, "discord");
-    if (isSlashName(cmd, "dock-slack") or isSlashName(cmd, "dock_slack")) return try handleDockCommand(self, "slack");
-    if (isSlashName(cmd, "activation")) return try handleActivationCommand(self, cmd.arg);
-    if (isSlashName(cmd, "send")) return try handleSendCommand(self, cmd.arg);
-    if (isSlashName(cmd, "elevated") or isSlashName(cmd, "elev")) return try handleElevatedCommand(self, cmd.arg);
-
-    if (isSlashName(cmd, "bash")) return try handleBashCommand(self, cmd.arg);
-    if (isSlashName(cmd, "poll")) return try handlePollCommand(self);
-    if (isSlashName(cmd, "skill")) return try handleSkillCommand(self, cmd.arg);
-    if (isSlashName(cmd, "doctor")) return try handleDoctorCommand(self);
-    if (isSlashName(cmd, "memory")) return try handleMemoryCommand(self, cmd.arg);
-
-    return null;
 }
 
 fn handleMemoryCommand(self: anytype, arg: []const u8) ![]const u8 {
