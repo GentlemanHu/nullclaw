@@ -894,10 +894,51 @@ test "ws buildFrame zero-len payload close" {
 }
 
 // Regression: v2026.3.12 applied a blanket `n == 0 → ConnectionClosed` check
-// to both TLS and plain socket paths.  TLS readVec can return 0 transiently
-// (empty TLS records, session tickets, re-keying) without the connection being
-// closed — the old code simply looped.  The fix confines the EOF-by-zero check
-// to the plain-socket branch only.  These tests lock that contract.
+// to both TLS and plain socket paths. TLS readVec may return 0 while it
+// refills its internal buffer or processes post-handshake records, so only
+// plain sockets should treat a zero-byte read as EOF.
+
+fn fake_tls_test_stream(_: *std.Io.Reader, _: *std.Io.Writer, _: std.Io.Limit) std.Io.Reader.StreamError!usize {
+    return error.EndOfStream;
+}
+
+fn fake_tls_read_vec_zero_then_byte(reader: *std.Io.Reader, data: [][]u8) std.Io.Reader.Error!usize {
+    if (reader.seek == 0 and reader.end == 0) {
+        // Mimic std.crypto.tls.Client.readVec buffering internal TLS records
+        // before returning any application bytes to the caller.
+        reader.seek = 1;
+        reader.end = 1;
+        return 0;
+    }
+    data[0][0] = 'Z';
+    return 1;
+}
+
+test "ws readExact TLS tolerates transient zero readVec return" {
+    var tls_reader_storage = [_]u8{0};
+    var tls_state: TlsState = undefined;
+    tls_state.tls_client = undefined;
+    tls_state.tls_client.reader = .{
+        .buffer = &tls_reader_storage,
+        .seek = 0,
+        .end = 0,
+        .vtable = &.{
+            .stream = fake_tls_test_stream,
+            .readVec = fake_tls_read_vec_zero_then_byte,
+        },
+    };
+
+    var client = WsClient{
+        .allocator = std.testing.allocator,
+        .stream = undefined,
+        .tls = &tls_state,
+        .write_mu = .{},
+    };
+
+    var buf: [1]u8 = undefined;
+    try client.readExact(&buf);
+    try std.testing.expectEqual(@as(u8, 'Z'), buf[0]);
+}
 
 test "ws readExact plain returns ConnectionClosed on immediate EOF" {
     if (comptime @import("builtin").os.tag == .windows) return error.SkipZigTest;
