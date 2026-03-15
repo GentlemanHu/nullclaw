@@ -204,24 +204,38 @@ pub const WasmRuntime = struct {
 
     const WasmtimeInvocation = struct {
         fuel_str: [32]u8,
+        fuel_len: usize,
         mem_pages_str: [32]u8,
-        argv: [7][]const u8,
+        mem_pages_len: usize,
+        module_path: []const u8,
+
+        fn writeArgv(self: *const WasmtimeInvocation, out: *[7][]const u8) usize {
+            out.* = .{
+                "wasmtime",
+                "run",
+                "--fuel",
+                self.fuel_str[0..self.fuel_len],
+                "--max-memory-size",
+                self.mem_pages_str[0..self.mem_pages_len],
+                self.module_path,
+            };
+            return 7;
+        }
     };
 
     const Wasm3Invocation = struct {
-        argv: [2][]const u8,
+        module_path: []const u8,
+
+        fn writeArgv(self: *const Wasm3Invocation, out: *[7][]const u8) usize {
+            out[0] = "wasm3";
+            out[1] = self.module_path;
+            return 2;
+        }
     };
 
     const WasmInvocation = union(enum) {
         wasmtime: WasmtimeInvocation,
         wasm3: Wasm3Invocation,
-
-        fn argv(self: *const WasmInvocation) []const []const u8 {
-            return switch (self.*) {
-                .wasmtime => |invocation| invocation.argv[0..],
-                .wasm3 => |invocation| invocation.argv[0..],
-            };
-        }
     };
 
     const wasm_vtable = RuntimeAdapter.VTable{
@@ -338,8 +352,14 @@ pub const WasmRuntime = struct {
 
         const invocation = try self.buildInvocation(module_path, fuel, max_mem);
 
+        var argv_buf: [7][]const u8 = undefined;
+        const argc = switch (invocation) {
+            .wasmtime => |inv| inv.writeArgv(&argv_buf),
+            .wasm3 => |inv| inv.writeArgv(&argv_buf),
+        };
+
         // Build argv for selected engine (wasmtime/wasm3).
-        var child = std.process.Child.init(invocation.argv(), allocator);
+        var child = std.process.Child.init(argv_buf[0..argc], allocator);
 
         child.stdout_behavior = .Pipe;
         child.stderr_behavior = .Pipe;
@@ -480,25 +500,14 @@ pub const WasmRuntime = struct {
         const fuel_str = std.fmt.bufPrint(&invocation.fuel_str, "{d}", .{fuel}) catch return error.FormatError;
         const mem_pages_str = std.fmt.bufPrint(&invocation.mem_pages_str, "{d}", .{max_mem_pages}) catch return error.FormatError;
 
-        invocation.argv = .{
-            "wasmtime",
-            "run",
-            "--fuel",
-            fuel_str,
-            "--max-memory-size",
-            mem_pages_str,
-            module_path,
-        };
+        invocation.fuel_len = fuel_str.len;
+        invocation.mem_pages_len = mem_pages_str.len;
+        invocation.module_path = module_path;
         return invocation;
     }
 
     fn buildWasm3Invocation(module_path: []const u8) Wasm3Invocation {
-        return .{
-            .argv = .{
-                "wasm3",
-                module_path,
-            },
-        };
+        return .{ .module_path = module_path };
     }
 
     fn isCommandAvailable(allocator: std.mem.Allocator, command: []const u8) bool {
@@ -1022,28 +1031,35 @@ test "wasm integration builds wasmtime invocation from effective caps" {
     const wasm = WasmRuntime.init(.{ .fuel_limit = 77, .memory_limit_mb = 8, .engine = .wasmtime });
     const caps = wasm.defaultCapabilities();
     const invocation = try WasmRuntime.buildWasmtimeInvocation("tools/wasm/echo.wasm", wasm.effectiveFuel(caps), wasm.effectiveMemoryBytes(caps));
+    var argv: [7][]const u8 = undefined;
+    _ = invocation.writeArgv(&argv);
 
-    try std.testing.expectEqualStrings("wasmtime", invocation.argv[0]);
-    try std.testing.expectEqualStrings("run", invocation.argv[1]);
-    try std.testing.expectEqualStrings("--fuel", invocation.argv[2]);
-    try std.testing.expectEqualStrings("77", invocation.argv[3]);
-    try std.testing.expectEqualStrings("--max-memory-size", invocation.argv[4]);
-    try std.testing.expectEqualStrings("128", invocation.argv[5]);
-    try std.testing.expectEqualStrings("tools/wasm/echo.wasm", invocation.argv[6]);
+    try std.testing.expectEqualStrings("wasmtime", argv[0]);
+    try std.testing.expectEqualStrings("run", argv[1]);
+    try std.testing.expectEqualStrings("--fuel", argv[2]);
+    try std.testing.expectEqualStrings("77", argv[3]);
+    try std.testing.expectEqualStrings("--max-memory-size", argv[4]);
+    try std.testing.expectEqualStrings("128", argv[5]);
+    try std.testing.expectEqualStrings("tools/wasm/echo.wasm", argv[6]);
 }
 
 test "wasm regression invocation flags remain stable" {
     const invocation = try WasmRuntime.buildWasmtimeInvocation("mod.wasm", 1_000_000, 64 * 1024 * 1024);
-    try std.testing.expectEqualStrings("--fuel", invocation.argv[2]);
-    try std.testing.expectEqualStrings("--max-memory-size", invocation.argv[4]);
+    var argv: [7][]const u8 = undefined;
+    _ = invocation.writeArgv(&argv);
+    try std.testing.expectEqualStrings("--fuel", argv[2]);
+    try std.testing.expectEqualStrings("--max-memory-size", argv[4]);
 }
 
 test "wasm integration builds wasm3 invocation" {
     const wasm = WasmRuntime.init(.{ .engine = .wasm3 });
     const invocation = try wasm.buildInvocation("tools/wasm/echo.wasm", 10, 64 * 1024 * 1024);
     try std.testing.expect(invocation == .wasm3);
-    try std.testing.expectEqualStrings("wasm3", invocation.wasm3.argv[0]);
-    try std.testing.expectEqualStrings("tools/wasm/echo.wasm", invocation.wasm3.argv[1]);
+    var argv: [7][]const u8 = undefined;
+    const argc = invocation.wasm3.writeArgv(&argv);
+    try std.testing.expectEqual(@as(usize, 2), argc);
+    try std.testing.expectEqualStrings("wasm3", argv[0]);
+    try std.testing.expectEqualStrings("tools/wasm/echo.wasm", argv[1]);
 }
 
 test "wasm integration executes module with wasm3 when available" {
