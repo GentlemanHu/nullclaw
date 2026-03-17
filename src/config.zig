@@ -778,7 +778,7 @@ pub const Config = struct {
         try w.print(",\n    \"token_usage_ledger_window_hours\": {d}", .{self.diagnostics.token_usage_ledger_window_hours});
         try w.print(",\n    \"token_usage_ledger_max_bytes\": {d}", .{self.diagnostics.token_usage_ledger_max_bytes});
         try w.print(",\n    \"token_usage_ledger_max_lines\": {d}", .{self.diagnostics.token_usage_ledger_max_lines});
-        if (self.diagnostics.otel_endpoint != null or self.diagnostics.otel_service_name != null) {
+        if (self.diagnostics.otel_endpoint != null or self.diagnostics.otel_service_name != null or self.diagnostics.otel_headers.len > 0) {
             try w.print(",\n    \"otel\": {{", .{});
             var otel_first = true;
             if (self.diagnostics.otel_endpoint) |ep| {
@@ -788,6 +788,18 @@ pub const Config = struct {
             if (self.diagnostics.otel_service_name) |sn| {
                 if (!otel_first) try w.print(", ", .{});
                 try w.print("\"service_name\": \"{s}\"", .{sn});
+                otel_first = false;
+            }
+            if (self.diagnostics.otel_headers.len > 0) {
+                if (!otel_first) try w.print(", ", .{});
+                try w.print("\"headers\": {{", .{});
+                for (self.diagnostics.otel_headers, 0..) |header, i| {
+                    if (i > 0) try w.print(", ", .{});
+                    try writeJsonStr(w, header.key);
+                    try w.print(": ", .{});
+                    try writeJsonStr(w, header.value);
+                }
+                try w.print("}}", .{});
             }
             try w.print("}}", .{});
         }
@@ -1529,6 +1541,55 @@ test "save roundtrip preserves diagnostics logging flags" {
     try std.testing.expectEqual(@as(u32, 6), loaded.diagnostics.token_usage_ledger_window_hours);
     try std.testing.expectEqual(@as(u64, 131072), loaded.diagnostics.token_usage_ledger_max_bytes);
     try std.testing.expectEqual(@as(u64, 2048), loaded.diagnostics.token_usage_ledger_max_lines);
+}
+
+test "save roundtrip preserves diagnostics otel headers" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const base = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(base);
+    const config_path = try std.fmt.allocPrint(allocator, "{s}/config.json", .{base});
+    defer allocator.free(config_path);
+
+    const headers = [_]DiagnosticsConfig.OtelHeaderEntry{
+        .{ .key = "Authorization", .value = "Bearer secret-token" },
+        .{ .key = "x-nullwatch-source", .value = "nullclaw" },
+    };
+
+    var cfg = Config{
+        .workspace_dir = base,
+        .config_path = config_path,
+        .allocator = allocator,
+    };
+    cfg.diagnostics.backend = "otel";
+    cfg.diagnostics.otel_endpoint = "http://127.0.0.1:7710";
+    cfg.diagnostics.otel_service_name = "nullclaw";
+    cfg.diagnostics.otel_headers = &headers;
+    try cfg.save();
+
+    const file = try std.fs.openFileAbsolute(config_path, .{});
+    defer file.close();
+    const content = try file.readToEndAlloc(allocator, 64 * 1024);
+    defer allocator.free(content);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    var loaded = Config{
+        .workspace_dir = base,
+        .config_path = config_path,
+        .allocator = arena.allocator(),
+    };
+    try loaded.parseJson(content);
+    try std.testing.expectEqualStrings("otel", loaded.diagnostics.backend);
+    try std.testing.expectEqualStrings("http://127.0.0.1:7710", loaded.diagnostics.otel_endpoint.?);
+    try std.testing.expectEqualStrings("nullclaw", loaded.diagnostics.otel_service_name.?);
+    try std.testing.expectEqual(@as(usize, 2), loaded.diagnostics.otel_headers.len);
+    try std.testing.expectEqualStrings("Authorization", loaded.diagnostics.otel_headers[0].key);
+    try std.testing.expectEqualStrings("Bearer secret-token", loaded.diagnostics.otel_headers[0].value);
+    try std.testing.expectEqualStrings("x-nullwatch-source", loaded.diagnostics.otel_headers[1].key);
+    try std.testing.expectEqualStrings("nullclaw", loaded.diagnostics.otel_headers[1].value);
 }
 
 test "save roundtrip preserves reliability settings" {
@@ -2577,7 +2638,7 @@ test "validation rejects relay ttl values outside supported ranges" {
 test "json parse diagnostics section" {
     const allocator = std.testing.allocator;
     const json =
-        \\{"diagnostics": {"backend": "otel", "log_tool_calls": true, "log_message_receipts": true, "log_message_payloads": true, "log_llm_io": true, "token_usage_ledger_enabled": false, "token_usage_ledger_window_hours": 12, "token_usage_ledger_max_bytes": 262144, "token_usage_ledger_max_lines": 4096, "otel": {"endpoint": "http://localhost:4318", "service_name": "yc"}}}
+        \\{"diagnostics": {"backend": "otel", "log_tool_calls": true, "log_message_receipts": true, "log_message_payloads": true, "log_llm_io": true, "token_usage_ledger_enabled": false, "token_usage_ledger_window_hours": 12, "token_usage_ledger_max_bytes": 262144, "token_usage_ledger_max_lines": 4096, "otel": {"endpoint": "http://localhost:4318", "service_name": "yc", "headers": {"Authorization": "Bearer test", "x-nullwatch-source": "nullclaw"}}}}
     ;
     var cfg = Config{ .workspace_dir = "/tmp/yc", .config_path = "/tmp/yc/config.json", .allocator = allocator };
     try cfg.parseJson(json);
@@ -2592,9 +2653,19 @@ test "json parse diagnostics section" {
     try std.testing.expectEqual(@as(u64, 4096), cfg.diagnostics.token_usage_ledger_max_lines);
     try std.testing.expectEqualStrings("http://localhost:4318", cfg.diagnostics.otel_endpoint.?);
     try std.testing.expectEqualStrings("yc", cfg.diagnostics.otel_service_name.?);
+    try std.testing.expectEqual(@as(usize, 2), cfg.diagnostics.otel_headers.len);
+    try std.testing.expectEqualStrings("Authorization", cfg.diagnostics.otel_headers[0].key);
+    try std.testing.expectEqualStrings("Bearer test", cfg.diagnostics.otel_headers[0].value);
+    try std.testing.expectEqualStrings("x-nullwatch-source", cfg.diagnostics.otel_headers[1].key);
+    try std.testing.expectEqualStrings("nullclaw", cfg.diagnostics.otel_headers[1].value);
     allocator.free(cfg.diagnostics.backend);
     allocator.free(cfg.diagnostics.otel_endpoint.?);
     allocator.free(cfg.diagnostics.otel_service_name.?);
+    for (cfg.diagnostics.otel_headers) |header| {
+        allocator.free(header.key);
+        allocator.free(header.value);
+    }
+    allocator.free(cfg.diagnostics.otel_headers);
 }
 
 test "json parse scheduler section" {

@@ -224,9 +224,19 @@ pub fn run(allocator: std.mem.Allocator, args: []const [:0]const u8) !void {
     const message_arg = parsed_args.message_arg;
     const session_id = parsed_args.session_id;
 
-    // Create a noop observer
-    var noop = observability.NoopObserver{};
-    const obs = noop.observer();
+    const runtime_observer = try observability.RuntimeObserver.create(
+        allocator,
+        .{
+            .workspace_dir = cfg.workspace_dir,
+            .backend = cfg.diagnostics.backend,
+            .otel_endpoint = cfg.diagnostics.otel_endpoint,
+            .otel_service_name = cfg.diagnostics.otel_service_name,
+        },
+        cfg.diagnostics.otel_headers,
+        &.{},
+    );
+    defer runtime_observer.destroy();
+    const obs = runtime_observer.observer();
 
     // Record agent start
     const start_event = ObserverEvent{ .agent_start = .{
@@ -257,6 +267,7 @@ pub fn run(allocator: std.mem.Allocator, args: []const [:0]const u8) !void {
     const resolved_api_key = runtime_provider.primaryApiKey();
 
     var subagent_manager = subagent_mod.SubagentManager.init(allocator, &cfg, null, .{});
+    subagent_manager.observer = runtime_observer.backendObserver();
     subagent_manager.task_runner = subagent_runner.runTaskWithTools;
     defer subagent_manager.deinit();
 

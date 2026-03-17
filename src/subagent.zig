@@ -9,6 +9,7 @@ const Allocator = std.mem.Allocator;
 const bus_mod = @import("bus.zig");
 const config_mod = @import("config.zig");
 const config_types = @import("config_types.zig");
+const observability = @import("observability.zig");
 const providers = @import("providers/root.zig");
 const thread_stacks = @import("thread_stacks.zig");
 
@@ -61,6 +62,7 @@ pub const TaskRunRequest = struct {
     block_high_risk_commands: bool,
     allow_raw_url_chars: bool,
     configured_providers: []const config_types.ProviderEntry,
+    observer: ?observability.Observer = null,
 };
 
 pub const TaskRunnerFn = *const fn (allocator: Allocator, request: TaskRunRequest) anyerror![]const u8;
@@ -107,6 +109,7 @@ pub const SubagentManager = struct {
     http_max_response_size: u32,
     tools_config: config_types.ToolsConfig,
     memory_config: config_types.MemoryConfig,
+    observer: ?observability.Observer = null,
     task_runner: ?TaskRunnerFn = null,
 
     pub fn init(
@@ -390,6 +393,7 @@ fn subagentThreadFn(ctx: *ThreadContext) void {
             .block_high_risk_commands = ctx.manager.block_high_risk_commands,
             .allow_raw_url_chars = ctx.manager.allow_raw_url_chars,
             .configured_providers = ctx.manager.configured_providers,
+            .observer = ctx.manager.observer,
         };
 
         const result = runner(ctx.manager.allocator, request) catch |err| {

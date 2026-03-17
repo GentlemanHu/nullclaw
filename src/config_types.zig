@@ -65,9 +65,15 @@ pub const AudioMediaConfig = struct {
 // ── Sub-config structs ──────────────────────────────────────────
 
 pub const DiagnosticsConfig = struct {
+    pub const OtelHeaderEntry = struct {
+        key: []const u8,
+        value: []const u8,
+    };
+
     backend: []const u8 = "none",
     otel_endpoint: ?[]const u8 = null,
     otel_service_name: ?[]const u8 = null,
+    otel_headers: []const OtelHeaderEntry = &.{},
     /// Optional max length for user-visible provider/API errors after scrubbing.
     /// If null, uses env var NULLCLAW_MAX_ERROR_CHARS (or built-in default).
     api_error_max_chars: ?u32 = null,
