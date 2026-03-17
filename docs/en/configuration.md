@@ -15,6 +15,7 @@ NullClaw is compatible with OpenClaw config structure and uses `snake_case` keys
 - Open [Usage and Operations](./usage.md) after config edits to validate runtime behavior
 - Open [Security](./security.md) before widening permissions, public exposure, or tool scope
 - Open [Gateway API](./gateway-api.md) if your config changes affect pairing, webhooks, or external integrations
+- Open [External Channel Plugins](./external-channels.md) if you are wiring a non-core channel
 
 **If you came from ...**
 
@@ -288,6 +289,9 @@ External channel plugin example:
 ```
 
 External channel notes:
+
+For the full protocol, lifecycle, metadata conventions, and plugin author
+contract, see [External Channel Plugins](./external-channels.md).
 
 - `runtime_name` is the nullclaw runtime channel id used by routing, bindings, session keys, and outbound dispatch. It must not reuse a built-in channel name or any runtime name already claimed by another configured channel.
 - `transport.command` plus optional `transport.args` starts the plugin as a child process over line-delimited JSON-RPC on stdio.

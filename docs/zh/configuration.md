@@ -5,7 +5,7 @@ NullClaw 与 OpenClaw 配置结构兼容，使用 `snake_case` 字段风格。
 ## 页面导航
 
 - 这页适合谁：已经装好 NullClaw，准备生成、修改或审查 `config.json` 的使用者与运维者。
-- 看完去哪里：要把配置真正跑起来看 [使用与运维](./usage.md)；要理解安全边界看 [安全机制](./security.md)；要查看命令入口与覆盖参数看 [命令参考](./commands.md)。
+- 看完去哪里：要把配置真正跑起来看 [使用与运维](./usage.md)；要理解安全边界看 [安全机制](./security.md)；要查看命令入口与覆盖参数看 [命令参考](./commands.md)；要接非 core 渠道看 [外部渠道插件](./external-channels.md)。
 - 如果你是从某页来的：从 [安装指南](./installation.md) 来，下一步通常就是生成初始配置；从 [Gateway API](./gateway-api.md) 来，这页可回查 `gateway` 与 channel 相关字段；从 [安全机制](./security.md) 来，这页提供具体配置落点与示例。
 
 ## 配置文件位置
@@ -179,6 +179,9 @@ nullclaw onboard --interactive
 ```
 
 外部渠道说明：
+
+完整的协议、生命周期、metadata 约定和插件作者契约，请继续看
+[外部渠道插件](./external-channels.md)。
 
 - `runtime_name` 是 nullclaw 内部使用的运行时渠道 id，routing、bindings、session key 和出站分发都会使用它。它不能复用内建 channel 名称，也不能和任何其他已配置 channel 已占用的运行时名字冲突。
 - `transport.command` 和可选的 `transport.args` 会把插件作为子进程启动，并通过 stdio 上的逐行 JSON-RPC 通信。
