@@ -36,6 +36,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const root = @import("root.zig");
 const config_types = @import("../config_types.zig");
+const fs_compat = @import("../fs_compat.zig");
 const sse_client = @import("../sse_client.zig");
 const platform = @import("../platform.zig");
 const thread_stacks = @import("../thread_stacks.zig");
@@ -264,11 +265,20 @@ pub const SignalChannel = struct {
     /// - Entries with `uuid:` prefix are normalized before comparison.
     pub fn isSenderAllowed(self: *const SignalChannel, sender: []const u8) bool {
         if (self.allow_from.len == 0) return false;
+        var matched = false;
+        var wildcard_seen = false;
         for (self.allow_from) |entry| {
-            if (std.mem.eql(u8, entry, "*")) return true;
-            if (std.mem.eql(u8, normalizeAllowEntry(entry), normalizeAllowEntry(sender))) return true;
+            if (std.mem.eql(u8, entry, "*")) {
+                wildcard_seen = true;
+                continue;
+            }
+            if (std.mem.eql(u8, normalizeAllowEntry(entry), normalizeAllowEntry(sender))) matched = true;
         }
-        return false;
+        if (wildcard_seen) {
+            root.warnWildcardAllowAll("signal channel");
+            return true;
+        }
+        return matched;
     }
 
     /// Check whether a sender is allowed in group chats.
@@ -277,11 +287,20 @@ pub const SignalChannel = struct {
     /// - `*` = allow all group senders.
     pub fn isGroupSenderAllowed(self: *const SignalChannel, sender: []const u8) bool {
         if (self.group_allow_from.len == 0) return false;
+        var matched = false;
+        var wildcard_seen = false;
         for (self.group_allow_from) |entry| {
-            if (std.mem.eql(u8, entry, "*")) return true;
-            if (std.mem.eql(u8, normalizeAllowEntry(entry), normalizeAllowEntry(sender))) return true;
+            if (std.mem.eql(u8, entry, "*")) {
+                wildcard_seen = true;
+                continue;
+            }
+            if (std.mem.eql(u8, normalizeAllowEntry(entry), normalizeAllowEntry(sender))) matched = true;
         }
-        return false;
+        if (wildcard_seen) {
+            root.warnWildcardAllowAll("signal channel");
+            return true;
+        }
+        return matched;
     }
 
     // ── Envelope Processing ─────────────────────────────────────────
@@ -782,7 +801,7 @@ pub const SignalChannel = struct {
         }
 
         for (attachments) |path| {
-            const file_data = std.fs.cwd().readFileAlloc(self.allocator, path, 10 * 1024 * 1024) catch |err| {
+            const file_data = fs_compat.readFileAlloc(std.fs.cwd(), self.allocator, path, 10 * 1024 * 1024) catch |err| {
                 log.warn("Signal: failed to read attachment {s}: {}", .{ path, err });
                 continue;
             };
@@ -1736,6 +1755,42 @@ test "group sender allowlist wildcard" {
         true,
     );
     try std.testing.expect(ch.isGroupSenderAllowed("+15550001111"));
+}
+
+test "signal exact dm match still triggers wildcard warning" {
+    root.resetWildcardWarningForTest("signal channel");
+    defer root.resetWildcardWarningForTest("signal channel");
+
+    const users = [_][]const u8{ "+1111111111", "*" };
+    const ch = SignalChannel.init(
+        std.testing.allocator,
+        "http://127.0.0.1:8686",
+        "+1234567890",
+        &users,
+        &.{},
+        true,
+        true,
+    );
+    try std.testing.expect(ch.isSenderAllowed("+1111111111"));
+    try std.testing.expect(root.wildcardWarningTriggeredForTest("signal channel"));
+}
+
+test "signal exact group match still triggers wildcard warning" {
+    root.resetWildcardWarningForTest("signal channel");
+    defer root.resetWildcardWarningForTest("signal channel");
+
+    const senders = [_][]const u8{ "+15550001111", "*" };
+    const ch = SignalChannel.init(
+        std.testing.allocator,
+        "http://127.0.0.1:8686",
+        "+1234567890",
+        &.{},
+        &senders,
+        true,
+        true,
+    );
+    try std.testing.expect(ch.isGroupSenderAllowed("+15550001111"));
+    try std.testing.expect(root.wildcardWarningTriggeredForTest("signal channel"));
 }
 
 test "group sender allowlist empty fallback path has no explicit entries" {

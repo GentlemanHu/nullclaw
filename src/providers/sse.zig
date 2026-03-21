@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const root = @import("root.zig");
+const fs_compat = @import("../fs_compat.zig");
 const http_util = @import("../http_util.zig");
 const platform = @import("../platform.zig");
 const error_classify = @import("error_classify.zig");
@@ -9,25 +10,31 @@ const log = std.log.scoped(.provider_sse);
 
 var curl_fail_fast_arg_mutex: std.Thread.Mutex = .{};
 var curl_fail_with_body_supported_cache: ?bool = null;
+const stream_stall_detection_args = [_][]const u8{
+    "--speed-limit",
+    "1",
+    "--speed-time",
+    "60",
+};
 
 fn finalizeStreamResult(
     allocator: std.mem.Allocator,
     accumulated: []const u8,
-    output_tokens: ?u32,
+    stream_usage: ?root.TokenUsage,
 ) !root.StreamChatResult {
     const content = if (accumulated.len > 0)
         try allocator.dupe(u8, accumulated)
     else
         null;
 
-    const completion_tokens = if (output_tokens) |ot|
-        (if (ot > 0) ot else @as(u32, @intCast((accumulated.len + 3) / 4)))
-    else
-        @as(u32, @intCast((accumulated.len + 3) / 4));
+    var usage = stream_usage orelse root.TokenUsage{};
+    if (usage.completion_tokens == 0) {
+        usage.completion_tokens = @intCast((accumulated.len + 3) / 4);
+    }
 
     return .{
         .content = content,
-        .usage = .{ .completion_tokens = completion_tokens },
+        .usage = usage,
         .model = "",
     };
 }
@@ -93,6 +100,13 @@ pub fn curlFailFastArg(allocator: std.mem.Allocator) []const u8 {
     return if (curl_fail_with_body_supported_cache.?) "--fail-with-body" else "-f";
 }
 
+pub fn appendCurlStallDetectionArgs(argv_buf: [][]const u8, argc: *usize) void {
+    for (stream_stall_detection_args) |arg| {
+        argv_buf[argc.*] = arg;
+        argc.* += 1;
+    }
+}
+
 const CurlBodyArg = struct {
     arg: []const u8,
     temp_path_buf: [std.fs.max_path_bytes]u8 = undefined,
@@ -151,7 +165,7 @@ fn prepareCurlBodyArg(
 
     const verify_file = std.fs.openFileAbsolute(body_path, .{}) catch return error.TempFileCreateFailed;
     defer verify_file.close();
-    const verify_stat = verify_file.stat() catch return error.TempFileCreateFailed;
+    const verify_stat = fs_compat.stat(verify_file) catch return error.TempFileCreateFailed;
     if (log_enabled) {
         debug_log.info("Temp body file size: {d} bytes", .{verify_stat.size});
     }
@@ -172,6 +186,8 @@ pub const SseLineResult = union(enum) {
     delta: []const u8,
     /// Stream is complete ([DONE] sentinel).
     done: void,
+    /// Token usage from a stream chunk.
+    usage: root.TokenUsage,
     /// Line should be skipped (empty, comment, or no content).
     skip: void,
 };
@@ -188,18 +204,59 @@ pub fn parseSseLine(allocator: std.mem.Allocator, line: []const u8) !SseLineResu
     if (trimmed.len == 0) return .skip;
     if (trimmed[0] == ':') return .skip;
 
-    const prefix = "data: ";
+    // SSE uses "data:" with an optional single leading space before the value.
+    const prefix = "data:";
     if (!std.mem.startsWith(u8, trimmed, prefix)) return .skip;
 
-    const data = trimmed[prefix.len..];
+    const data = if (trimmed.len > prefix.len and trimmed[prefix.len] == ' ')
+        trimmed[prefix.len + 1 ..]
+    else
+        trimmed[prefix.len..];
+
+    if (data.len == 0) return .skip;
 
     if (std.mem.eql(u8, data, "[DONE]")) return .done;
 
-    const content = try extractDeltaContent(allocator, data) orelse return .skip;
+    const content = try extractDeltaContent(allocator, data) orelse {
+        // No content delta — check for usage data (sent in the final chunk).
+        if (extractStreamUsage(data)) |u| return .{ .usage = u };
+        return .skip;
+    };
     return .{ .delta = content };
 }
 
-/// Extract `choices[0].delta.content` from an SSE JSON payload.
+/// Extract `usage` object from an OpenAI-compatible streaming chunk.
+/// The final chunk typically has `choices:[]` and a top-level `usage` object.
+fn extractStreamUsage(json_str: []const u8) ?root.TokenUsage {
+    var buf: [4096]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&buf);
+    const alloc = fba.allocator();
+
+    const parsed = std.json.parseFromSlice(std.json.Value, alloc, json_str, .{}) catch
+        return null;
+    defer parsed.deinit();
+
+    const obj = parsed.value.object;
+    const usage_val = obj.get("usage") orelse return null;
+    if (usage_val != .object) return null;
+
+    var usage = root.TokenUsage{};
+    if (usage_val.object.get("prompt_tokens")) |v| {
+        if (v == .integer) usage.prompt_tokens = @intCast(v.integer);
+    }
+    if (usage_val.object.get("completion_tokens")) |v| {
+        if (v == .integer) usage.completion_tokens = @intCast(v.integer);
+    }
+    if (usage_val.object.get("total_tokens")) |v| {
+        if (v == .integer) usage.total_tokens = @intCast(v.integer);
+    }
+    return usage;
+}
+
+/// Extract visible streaming text from an SSE JSON payload.
+/// Falls back to `delta.reasoning_content` when providers stream their
+/// thinking trace separately and wraps it in think tags so higher layers can
+/// suppress it from user-visible output.
 /// Returns owned slice or null if no content found.
 pub fn extractDeltaContent(allocator: std.mem.Allocator, json_str: []const u8) !?[]const u8 {
     const parsed = std.json.parseFromSlice(std.json.Value, allocator, json_str, .{}) catch
@@ -216,11 +273,20 @@ pub fn extractDeltaContent(allocator: std.mem.Allocator, json_str: []const u8) !
     const delta = first.object.get("delta") orelse return null;
     if (delta != .object) return null;
 
-    const content = delta.object.get("content") orelse return null;
-    if (content != .string) return null;
-    if (content.string.len == 0) return null;
+    if (delta.object.get("content")) |content| {
+        if (content == .string and content.string.len > 0) {
+            return try allocator.dupe(u8, content.string);
+        }
+    }
 
-    return try allocator.dupe(u8, content.string);
+    if (delta.object.get("reasoning_content")) |reasoning_content| {
+        if (reasoning_content == .string and reasoning_content.string.len > 0) {
+            const wrapped = try std.fmt.allocPrint(allocator, "<think>{s}</think>", .{reasoning_content.string});
+            return wrapped;
+        }
+    }
+
+    return null;
 }
 
 /// Run curl in SSE streaming mode and parse output line by line.
@@ -264,6 +330,11 @@ pub fn curlStream(
         argv_buf[argc] = timeout_str;
         argc += 1;
     }
+
+    // Kill the curl process if transfer rate drops below 1 byte/second for 60 seconds.
+    // This catches providers that open the SSE connection but stall mid-stream without
+    // hitting the --max-time wall (e.g. glm-5 on infini-ai hanging on large contexts).
+    appendCurlStallDetectionArgs(argv_buf[0..], &argc);
 
     argv_buf[argc] = "-X";
     argc += 1;
@@ -362,6 +433,7 @@ pub fn curlStream(
     var read_buf: [4096]u8 = undefined;
     var saw_done = false;
     var total_stdout: usize = 0;
+    var stream_usage: ?root.TokenUsage = null;
 
     outer: while (true) {
         const n = stdout_file.read(&read_buf) catch |err| {
@@ -423,6 +495,7 @@ pub fn curlStream(
                         try accumulated.appendSlice(allocator, text);
                         callback(ctx, root.StreamChunk.textDelta(text));
                     },
+                    .usage => |u| stream_usage = u,
                     .done => {
                         if (log_enabled) {
                             debug_log.info("SSE stream done", .{});
@@ -453,6 +526,7 @@ pub fn curlStream(
                     try accumulated.appendSlice(allocator, text);
                     callback(ctx, root.StreamChunk.textDelta(text));
                 },
+                .usage => |u| stream_usage = u,
                 .done => {},
                 .skip => {},
             }
@@ -473,10 +547,10 @@ pub fn curlStream(
     }
     const term = child.wait() catch |err| {
         log.err("curlStream child.wait failed: {}", .{err});
-        if (saw_done) {
-            log.warn("curlStream proceeding despite wait failure after receiving stream data", .{});
+        if (root.shouldRecoverPartialStream(accumulated.items.len, saw_done)) {
+            log.warn("curlStream proceeding despite wait failure after partial stream output", .{});
             callback(ctx, root.StreamChunk.finalChunk());
-            return finalizeStreamResult(allocator, accumulated.items, null);
+            return finalizeStreamResult(allocator, accumulated.items, stream_usage);
         }
         return error.CurlWaitError;
     };
@@ -485,18 +559,18 @@ pub fn curlStream(
     }
     switch (term) {
         .Exited => |code| if (code != 0) {
-            if (saw_done) {
-                log.warn("curlStream exit code {d} after stream data; returning accumulated output", .{code});
+            if (root.shouldRecoverPartialStream(accumulated.items.len, saw_done)) {
+                log.warn("curlStream exit code {d} after partial stream output; returning accumulated output", .{code});
                 callback(ctx, root.StreamChunk.finalChunk());
-                return finalizeStreamResult(allocator, accumulated.items, null);
+                return finalizeStreamResult(allocator, accumulated.items, stream_usage);
             }
             return error.CurlFailed;
         },
         else => {
-            if (saw_done) {
-                log.warn("curlStream abnormal termination after stream data; returning accumulated output", .{});
+            if (root.shouldRecoverPartialStream(accumulated.items.len, saw_done)) {
+                log.warn("curlStream abnormal termination after partial stream output; returning accumulated output", .{});
                 callback(ctx, root.StreamChunk.finalChunk());
-                return finalizeStreamResult(allocator, accumulated.items, null);
+                return finalizeStreamResult(allocator, accumulated.items, stream_usage);
             }
             return error.CurlFailed;
         },
@@ -504,7 +578,7 @@ pub fn curlStream(
 
     // Signal stream completion only after curl exits successfully.
     callback(ctx, root.StreamChunk.finalChunk());
-    return finalizeStreamResult(allocator, accumulated.items, null);
+    return finalizeStreamResult(allocator, accumulated.items, stream_usage);
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -689,7 +763,7 @@ pub fn curlStreamAnthropic(
     defer line_buf.deinit(allocator);
 
     var current_event: []const u8 = "";
-    var output_tokens: u32 = 0;
+    var anthropic_usage: root.TokenUsage = .{};
     var saw_done = false;
 
     const file = child.stdout.?;
@@ -716,7 +790,7 @@ pub fn curlStreamAnthropic(
                         try accumulated.appendSlice(allocator, text);
                         callback(ctx, root.StreamChunk.textDelta(text));
                     },
-                    .usage => |tokens| output_tokens = tokens,
+                    .usage => |tokens| anthropic_usage.completion_tokens = tokens,
                     .done => {
                         saw_done = true;
                         line_buf.clearRetainingCapacity();
@@ -742,34 +816,34 @@ pub fn curlStreamAnthropic(
 
     const term = child.wait() catch |err| {
         log.err("curlStreamAnthropic child.wait failed: {}", .{err});
-        if (saw_done) {
-            log.warn("curlStreamAnthropic proceeding despite wait failure after receiving stream data", .{});
+        if (root.shouldRecoverPartialStream(accumulated.items.len, saw_done)) {
+            log.warn("curlStreamAnthropic proceeding despite wait failure after partial stream output", .{});
             callback(ctx, root.StreamChunk.finalChunk());
-            return finalizeStreamResult(allocator, accumulated.items, output_tokens);
+            return finalizeStreamResult(allocator, accumulated.items, anthropic_usage);
         }
         return error.CurlWaitError;
     };
     switch (term) {
         .Exited => |code| if (code != 0) {
-            if (saw_done) {
-                log.warn("curlStreamAnthropic exit code {d} after stream data; returning accumulated output", .{code});
+            if (root.shouldRecoverPartialStream(accumulated.items.len, saw_done)) {
+                log.warn("curlStreamAnthropic exit code {d} after partial stream output; returning accumulated output", .{code});
                 callback(ctx, root.StreamChunk.finalChunk());
-                return finalizeStreamResult(allocator, accumulated.items, output_tokens);
+                return finalizeStreamResult(allocator, accumulated.items, anthropic_usage);
             }
             return error.CurlFailed;
         },
         else => {
-            if (saw_done) {
-                log.warn("curlStreamAnthropic abnormal termination after stream data; returning accumulated output", .{});
+            if (root.shouldRecoverPartialStream(accumulated.items.len, saw_done)) {
+                log.warn("curlStreamAnthropic abnormal termination after partial stream output; returning accumulated output", .{});
                 callback(ctx, root.StreamChunk.finalChunk());
-                return finalizeStreamResult(allocator, accumulated.items, output_tokens);
+                return finalizeStreamResult(allocator, accumulated.items, anthropic_usage);
             }
             return error.CurlFailed;
         },
     }
 
     callback(ctx, root.StreamChunk.finalChunk());
-    return finalizeStreamResult(allocator, accumulated.items, output_tokens);
+    return finalizeStreamResult(allocator, accumulated.items, anthropic_usage);
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -779,6 +853,18 @@ pub fn curlStreamAnthropic(
 test "parseSseLine valid delta" {
     const allocator = std.testing.allocator;
     const result = try parseSseLine(allocator, "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}");
+    switch (result) {
+        .delta => |text| {
+            defer allocator.free(text);
+            try std.testing.expectEqualStrings("Hello", text);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "parseSseLine valid delta without optional space" {
+    const allocator = std.testing.allocator;
+    const result = try parseSseLine(allocator, "data:{\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}");
     switch (result) {
         .delta => |text| {
             defer allocator.free(text);
@@ -803,8 +889,27 @@ test "prepareCurlBodyArg uses temp file only on Windows" {
     }
 }
 
+test "appendCurlStallDetectionArgs appends curl speed flags in order" {
+    // Regression: stalled SSE streams must trip curl's speed-limit instead of
+    // hanging until --max-time expires with an idle-but-open connection.
+    var argv_buf: [8][]const u8 = undefined;
+    var argc: usize = 0;
+    appendCurlStallDetectionArgs(argv_buf[0..], &argc);
+
+    try std.testing.expectEqual(@as(usize, 4), argc);
+    try std.testing.expectEqualStrings("--speed-limit", argv_buf[0]);
+    try std.testing.expectEqualStrings("1", argv_buf[1]);
+    try std.testing.expectEqualStrings("--speed-time", argv_buf[2]);
+    try std.testing.expectEqualStrings("60", argv_buf[3]);
+}
+
 test "parseSseLine DONE sentinel" {
     const result = try parseSseLine(std.testing.allocator, "data: [DONE]");
+    try std.testing.expect(result == .done);
+}
+
+test "parseSseLine DONE sentinel without optional space" {
+    const result = try parseSseLine(std.testing.allocator, "data:[DONE]");
     try std.testing.expect(result == .done);
 }
 
@@ -828,6 +933,11 @@ test "parseSseLine empty line" {
 
 test "parseSseLine comment" {
     const result = try parseSseLine(std.testing.allocator, ":keep-alive");
+    try std.testing.expect(result == .skip);
+}
+
+test "parseSseLine empty data field" {
+    const result = try parseSseLine(std.testing.allocator, "data:");
     try std.testing.expect(result == .skip);
 }
 
@@ -859,6 +969,32 @@ test "extractDeltaContent without content" {
 
 test "extractDeltaContent empty content" {
     const result = try extractDeltaContent(std.testing.allocator, "{\"choices\":[{\"delta\":{\"content\":\"\"}}]}");
+    try std.testing.expect(result == null);
+}
+
+test "extractDeltaContent falls back to reasoning_content when content empty" {
+    const allocator = std.testing.allocator;
+    const result = (try extractDeltaContent(allocator, "{\"choices\":[{\"delta\":{\"content\":\"\",\"reasoning_content\":\"step by step\"}}]}")).?;
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("<think>step by step</think>", result);
+}
+
+test "extractDeltaContent falls back to reasoning_content when content missing" {
+    const allocator = std.testing.allocator;
+    const result = (try extractDeltaContent(allocator, "{\"choices\":[{\"delta\":{\"reasoning_content\":\"step by step\"}}]}")).?;
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("<think>step by step</think>", result);
+}
+
+test "extractDeltaContent prefers visible content over reasoning_content" {
+    const allocator = std.testing.allocator;
+    const result = (try extractDeltaContent(allocator, "{\"choices\":[{\"delta\":{\"content\":\"final answer\",\"reasoning_content\":\"private\"}}]}")).?;
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("final answer", result);
+}
+
+test "extractDeltaContent empty reasoning_content returns null" {
+    const result = try extractDeltaContent(std.testing.allocator, "{\"choices\":[{\"delta\":{\"reasoning_content\":\"\"}}]}");
     try std.testing.expect(result == null);
 }
 
@@ -947,4 +1083,37 @@ test "extractAnthropicUsage correct JSON returns token count" {
     const json = "{\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":57}}";
     const result = (try extractAnthropicUsage(json)).?;
     try std.testing.expect(result == 57);
+}
+
+// ── Stream Usage Extraction Tests ───────────────────────────────
+
+test "extractStreamUsage returns full usage from final chunk" {
+    const json = "{\"id\":\"chatcmpl-abc\",\"choices\":[],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":263,\"total_tokens\":363}}";
+    const usage = extractStreamUsage(json).?;
+    try std.testing.expectEqual(@as(u32, 100), usage.prompt_tokens);
+    try std.testing.expectEqual(@as(u32, 263), usage.completion_tokens);
+    try std.testing.expectEqual(@as(u32, 363), usage.total_tokens);
+}
+
+test "extractStreamUsage returns null for chunk without usage" {
+    const json = "{\"id\":\"chatcmpl-abc\",\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}";
+    try std.testing.expect(extractStreamUsage(json) == null);
+}
+
+test "extractStreamUsage returns null for invalid JSON" {
+    try std.testing.expect(extractStreamUsage("not-json{{{") == null);
+}
+
+test "parseSseLine extracts usage from final chunk" {
+    const allocator = std.testing.allocator;
+    const line = "data: {\"id\":\"chatcmpl-abc\",\"choices\":[],\"usage\":{\"prompt_tokens\":50,\"completion_tokens\":20,\"total_tokens\":70}}";
+    const result = try parseSseLine(allocator, line);
+    switch (result) {
+        .usage => |u| {
+            try std.testing.expectEqual(@as(u32, 50), u.prompt_tokens);
+            try std.testing.expectEqual(@as(u32, 20), u.completion_tokens);
+            try std.testing.expectEqual(@as(u32, 70), u.total_tokens);
+        },
+        else => return error.TestUnexpectedResult,
+    }
 }

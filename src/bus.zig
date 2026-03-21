@@ -7,6 +7,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const testing = std.testing;
+const outbound = @import("outbound.zig");
 const streaming = @import("streaming.zig");
 const thread_stacks = @import("thread_stacks.zig");
 
@@ -41,11 +42,15 @@ pub const OutboundMessage = struct {
     chat_id: []const u8, // target chat
     content: []const u8, // response text
     media: []const []const u8 = &.{}, // file paths/URLs to send
+    choices: []const outbound.Choice = &.{}, // structured action choices for rich-capable channels
     stage: streaming.OutboundStage = .final,
+    draft_id: u64 = 0, // host-managed tracked draft turn id; 0 means no tracked draft
 
     pub fn deinit(self: *const OutboundMessage, allocator: Allocator) void {
         for (self.media) |m| allocator.free(m);
         if (self.media.len > 0) allocator.free(self.media);
+        for (self.choices) |choice| choice.deinit(allocator);
+        if (self.choices.len > 0) allocator.free(self.choices);
         // channel is a string literal or long-lived config pointer — not owned, don't free
         if (self.account_id) |aid| allocator.free(aid);
         allocator.free(self.chat_id);
@@ -219,6 +224,119 @@ fn makeOutboundWithAccountStage(
     };
 }
 
+fn dupeOutboundChoices(
+    allocator: Allocator,
+    choices_src: anytype,
+) Allocator.Error![]outbound.Choice {
+    const choice_type = @TypeOf(choices_src);
+    const Child = comptime choiceItemType(choice_type);
+    comptime {
+        if (!@hasField(Child, "id") or !@hasField(Child, "label") or !@hasField(Child, "submit_text")) {
+            @compileError("choices_src items must provide id, label, and submit_text fields");
+        }
+    }
+
+    const normalized = normalizeChoicesSource(choices_src);
+    if (normalized.len == 0) return &.{};
+
+    const duped = try allocator.alloc(outbound.Choice, normalized.len);
+    var i: usize = 0;
+    errdefer {
+        for (duped[0..i]) |choice| choice.deinit(allocator);
+        allocator.free(duped);
+    }
+    while (i < normalized.len) : (i += 1) {
+        duped[i] = .{
+            .id = try allocator.dupe(u8, normalized[i].id),
+            .label = try allocator.dupe(u8, normalized[i].label),
+            .submit_text = try allocator.dupe(u8, normalized[i].submit_text),
+        };
+    }
+    return duped;
+}
+
+fn choiceItemType(comptime choice_type: type) type {
+    return switch (@typeInfo(choice_type)) {
+        .pointer => |ptr_info| switch (ptr_info.size) {
+            .slice => ptr_info.child,
+            .one => switch (@typeInfo(ptr_info.child)) {
+                .array => |array_info| array_info.child,
+                else => @compileError("choices_src must be a slice or pointer to array"),
+            },
+            else => @compileError("choices_src must be a slice or pointer to array"),
+        },
+        else => @compileError("choices_src must be a slice or pointer to array"),
+    };
+}
+
+fn normalizeChoicesSource(choices_src: anytype) []const choiceItemType(@TypeOf(choices_src)) {
+    return switch (@typeInfo(@TypeOf(choices_src))) {
+        .pointer => |ptr_info| switch (ptr_info.size) {
+            .slice => choices_src,
+            .one => switch (@typeInfo(ptr_info.child)) {
+                .array => choices_src[0..],
+                else => unreachable,
+            },
+            else => unreachable,
+        },
+        else => unreachable,
+    };
+}
+
+pub fn makeOutboundWithChoices(
+    allocator: Allocator,
+    channel: []const u8,
+    chat_id: []const u8,
+    content: []const u8,
+    choices_src: anytype,
+) Allocator.Error!OutboundMessage {
+    const cid = try allocator.dupe(u8, chat_id);
+    errdefer allocator.free(cid);
+    const ct = try allocator.dupe(u8, content);
+    errdefer allocator.free(ct);
+    const choices = try dupeOutboundChoices(allocator, choices_src);
+    errdefer if (choices.len > 0) {
+        for (choices) |choice| choice.deinit(allocator);
+        allocator.free(choices);
+    };
+
+    return .{
+        .channel = channel,
+        .chat_id = cid,
+        .content = ct,
+        .choices = choices,
+    };
+}
+
+pub fn makeOutboundWithAccountChoices(
+    allocator: Allocator,
+    channel: []const u8,
+    account_id: []const u8,
+    chat_id: []const u8,
+    content: []const u8,
+    choices_src: anytype,
+) Allocator.Error!OutboundMessage {
+    const cid = try allocator.dupe(u8, chat_id);
+    errdefer allocator.free(cid);
+    const ct = try allocator.dupe(u8, content);
+    errdefer allocator.free(ct);
+    const aid = try allocator.dupe(u8, account_id);
+    errdefer allocator.free(aid);
+    const choices = try dupeOutboundChoices(allocator, choices_src);
+    errdefer if (choices.len > 0) {
+        for (choices) |choice| choice.deinit(allocator);
+        allocator.free(choices);
+    };
+
+    return .{
+        .channel = channel,
+        .account_id = aid,
+        .chat_id = cid,
+        .content = ct,
+        .choices = choices,
+    };
+}
+
 /// Create an OutboundMessage with media attachments.
 fn makeOutboundWithMedia(
     allocator: Allocator,
@@ -292,6 +410,30 @@ pub fn BoundedQueue(comptime T: type, comptime capacity: usize) type {
             self.not_empty.signal();
         }
 
+        pub fn publishTimeout(self: *Self, item: T, timeout_ms: u32) error{ Closed, Timeout }!void {
+            self.mutex.lock();
+            defer self.mutex.unlock();
+
+            const deadline_ns: i128 = std.time.nanoTimestamp() +
+                (@as(i128, @intCast(timeout_ms)) * std.time.ns_per_ms);
+            while (self.len == capacity and !self.closed) {
+                const remaining_ns = remainingTimeoutNs(deadline_ns);
+                if (remaining_ns == 0) return error.Timeout;
+                self.not_full.timedWait(&self.mutex, remaining_ns) catch |err| switch (err) {
+                    error.Timeout => {
+                        if (self.len == capacity and !self.closed) return error.Timeout;
+                    },
+                };
+            }
+            if (self.closed) return error.Closed;
+
+            self.buf[self.tail] = item;
+            self.tail = (self.tail + 1) % capacity;
+            self.len += 1;
+
+            self.not_empty.signal();
+        }
+
         /// Blocks if the queue is empty. Returns null if closed and the queue is empty.
         pub fn consume(self: *Self) ?T {
             self.mutex.lock();
@@ -328,6 +470,12 @@ pub fn BoundedQueue(comptime T: type, comptime capacity: usize) type {
     };
 }
 
+fn remainingTimeoutNs(deadline_ns: i128) u64 {
+    const remaining_ns = deadline_ns - std.time.nanoTimestamp();
+    if (remaining_ns <= 0) return 0;
+    return @intCast(remaining_ns);
+}
+
 // ---------------------------------------------------------------------------
 // Bus — top-level structure
 // ---------------------------------------------------------------------------
@@ -346,6 +494,10 @@ pub const Bus = struct {
 
     pub fn publishInbound(self: *Bus, msg: InboundMessage) error{Closed}!void {
         return self.inbound.publish(msg);
+    }
+
+    pub fn publishInboundTimeout(self: *Bus, msg: InboundMessage, timeout_ms: u32) error{ Closed, Timeout }!void {
+        return self.inbound.publishTimeout(msg, timeout_ms);
     }
 
     pub fn consumeInbound(self: *Bus) ?InboundMessage {
@@ -425,6 +577,7 @@ test "makeOutbound produces owned copies" {
     src_content[0] = 'Z';
     try testing.expectEqualStrings("reply", msg.content);
     try testing.expect(msg.stage == .final);
+    try testing.expectEqual(@as(u64, 0), msg.draft_id);
 }
 
 test "makeOutboundWithAccount stores account_id" {
@@ -434,6 +587,7 @@ test "makeOutboundWithAccount stores account_id" {
     try testing.expect(msg.account_id != null);
     try testing.expectEqualStrings("backup", msg.account_id.?);
     try testing.expect(msg.stage == .final);
+    try testing.expectEqual(@as(u64, 0), msg.draft_id);
 }
 
 test "makeOutboundChunk marks chunk stage" {
@@ -441,6 +595,7 @@ test "makeOutboundChunk marks chunk stage" {
     const msg = try makeOutboundChunk(alloc, "web", "c1", "delta");
     defer msg.deinit(alloc);
     try testing.expect(msg.stage == .chunk);
+    try testing.expectEqual(@as(u64, 0), msg.draft_id);
 }
 
 test "makeOutboundChunkWithAccount marks chunk stage" {
@@ -449,6 +604,33 @@ test "makeOutboundChunkWithAccount marks chunk stage" {
     defer msg.deinit(alloc);
     try testing.expect(msg.stage == .chunk);
     try testing.expectEqualStrings("main", msg.account_id.?);
+    try testing.expectEqual(@as(u64, 0), msg.draft_id);
+}
+
+test "makeOutboundWithChoices stores structured choices" {
+    const alloc = testing.allocator;
+    const choices = [_]outbound.Choice{
+        .{ .id = "yes", .label = "Yes", .submit_text = "yes" },
+        .{ .id = "no", .label = "No", .submit_text = "no" },
+    };
+    const msg = try makeOutboundWithChoices(alloc, "telegram", "c1", "reply", &choices);
+    defer msg.deinit(alloc);
+    try testing.expectEqual(@as(usize, 2), msg.choices.len);
+    try testing.expectEqualStrings("yes", msg.choices[0].id);
+    try testing.expectEqualStrings("No", msg.choices[1].label);
+    try testing.expect(msg.stage == .final);
+}
+
+test "makeOutboundWithAccountChoices stores account_id and choices" {
+    const alloc = testing.allocator;
+    const choices = [_]outbound.Choice{
+        .{ .id = "a", .label = "A", .submit_text = "alpha" },
+        .{ .id = "b", .label = "B", .submit_text = "beta" },
+    };
+    const msg = try makeOutboundWithAccountChoices(alloc, "telegram", "backup", "c1", "reply", &choices);
+    defer msg.deinit(alloc);
+    try testing.expectEqualStrings("backup", msg.account_id.?);
+    try testing.expectEqual(@as(usize, 2), msg.choices.len);
 }
 
 // ---------------------------------------------------------------------------
