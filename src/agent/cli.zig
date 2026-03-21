@@ -689,7 +689,11 @@ fn collectCliDebouncedInput(
         var poll_fds = [_]std.posix.pollfd{
             .{ .fd = stdin.handle, .events = std.posix.POLL.IN, .revents = 0 },
         };
-        const events = std.posix.poll(&poll_fds, timeout_ms) catch 0;
+        const poll_timeout: i32 = if (timeout_ms > std.math.maxInt(i32))
+            std.math.maxInt(i32)
+        else
+            @intCast(timeout_ms);
+        const events = std.posix.poll(&poll_fds, poll_timeout) catch 0;
         if (events > 0 and (poll_fds[0].revents & std.posix.POLL.IN) != 0) {
             var extra_line_buf: [4096]u8 = undefined;
             const extra_line = readCliLine(stdin, &extra_line_buf) orelse break;
