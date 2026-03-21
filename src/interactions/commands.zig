@@ -89,6 +89,7 @@ test "telegram command catalog appends grouped commands" {
     try appendTelegramCommandCatalogJson(&out, std.testing.allocator, .{});
 
     try std.testing.expect(std.mem.indexOf(u8, out.items, "\"command\":\"menu\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "\"command\":\"config\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.items, "\"command\":\"memory\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.items, "\"command\":\"bind\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.items, "\"command\":\"topic\"") != null);
