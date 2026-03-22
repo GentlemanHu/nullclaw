@@ -689,7 +689,10 @@ pub const Agent = struct {
     /// Warm start: Rebuild conversation history from saved message logs.
     pub fn attemptWarmStart(self: *Agent) void {
         // Guard: skip if history already exists or workspace_dir is empty
-        if (self.history.items.len > 0 or self.workspace_dir.len == 0) return;
+        if (self.history.items.len > 0 or self.workspace_dir.len == 0) {
+            log.debug("Warm start: skipped (history already has {d} entries or workspace_dir empty)", .{self.history.items.len});
+            return;
+        }
 
         // Build messages directory path
         const messages_dir = std.fs.path.join(self.allocator, &.{ self.workspace_dir, "messages" }) catch |err| {
@@ -702,11 +705,13 @@ pub const Agent = struct {
         std.fs.accessAbsolute(messages_dir, .{}) catch |err| {
             if (err == error.FileNotFound or err == error.NotDir) {
                 // No messages directory; nothing to warm start
+                log.info("Warm start: messages directory does not exist", .{});
                 return;
             }
-            log.warn("Warm start: cannot access messages directory '{s}': {s}", .{messages_dir, @errorName(err)});
+            log.warn("Warm start: cannot access messages directory '{s}': {s}", .{ messages_dir, @errorName(err) });
             return;
         };
+        log.info("Warm start: scanning messages dir: {s}", .{messages_dir});
 
         // Recursively collect all .md files
         var files = std.ArrayList([]const u8).empty;
@@ -722,7 +727,7 @@ pub const Agent = struct {
         while (dirs_to_visit.items.len > 0) {
             const current_dir = dirs_to_visit.pop().?;
             var dir = std.fs.openDirAbsolute(current_dir, .{ .iterate = true }) catch |err| {
-                log.warn("Warm start: failed to open directory '{s}': {s}", .{current_dir, @errorName(err)});
+                log.warn("Warm start: failed to open directory '{s}': {s}", .{ current_dir, @errorName(err) });
                 self.allocator.free(current_dir);
                 continue;
             };
@@ -731,7 +736,7 @@ pub const Agent = struct {
             var iter = dir.iterate();
             while (true) {
                 const entry = iter.next() catch |err| {
-                    log.warn("Warm start: directory iteration error in '{s}': {s}", .{current_dir, @errorName(err)});
+                    log.warn("Warm start: directory iteration error in '{s}': {s}", .{ current_dir, @errorName(err) });
                     continue;
                 } orelse break;
                 // Skip special entries
@@ -763,7 +768,11 @@ pub const Agent = struct {
             self.allocator.free(current_dir);
         }
 
-        if (files.items.len == 0) return;
+        if (files.items.len == 0) {
+            log.info("Warm start: no markdown files found", .{});
+            return;
+        }
+        log.info("Warm start: found {d} markdown files, sorting...", .{files.items.len});
 
         // Sort lexicographically (oldest first)
         std.mem.sort([]const u8, files.items, {}, struct {
@@ -784,34 +793,34 @@ pub const Agent = struct {
             const file_path = files.items[i];
 
             var file = std.fs.openFileAbsolute(file_path, .{ .mode = .read_only }) catch |err| {
-                log.warn("Warm start: failed to open message file '{s}': {s}", .{file_path, @errorName(err)});
+                log.warn("Warm start: failed to open message file '{s}': {s}", .{ file_path, @errorName(err) });
                 continue;
             };
             defer file.close();
 
             const file_stat = fs_compat.stat(file) catch |err| {
-                log.warn("Warm start: failed to stat message file '{s}': {s}", .{file_path, @errorName(err)});
+                log.warn("Warm start: failed to stat message file '{s}': {s}", .{ file_path, @errorName(err) });
                 continue;
             };
             const file_size = file_stat.size;
 
             var file_buf = self.allocator.alloc(u8, file_size) catch |err| {
-                log.warn("Warm start: allocation failed for file buffer (size {d}): {s}", .{file_size, @errorName(err)});
+                log.warn("Warm start: allocation failed for file buffer (size {d}): {s}", .{ file_size, @errorName(err) });
                 continue;
             };
             defer self.allocator.free(file_buf);
 
             const read_len = file.readAll(file_buf) catch |err| {
-                log.warn("Warm start: failed to read file '{s}': {s}", .{file_path, @errorName(err)});
+                log.warn("Warm start: failed to read file '{s}': {s}", .{ file_path, @errorName(err) });
                 continue;
             };
             if (read_len < file_size) {
-                log.warn("Warm start: incomplete read of file '{s}': expected {d}, got {d}", .{file_path, file_size, read_len});
+                log.warn("Warm start: incomplete read of file '{s}': expected {d}, got {d}", .{ file_path, file_size, read_len });
                 continue;
             }
 
             const parsed = self.parseMessageFile(file_buf[0..read_len]) catch |err| {
-                log.warn("Warm start: parse error in file '{s}': {s}", .{file_path, @errorName(err)});
+                log.warn("Warm start: parse error in file '{s}': {s}", .{ file_path, @errorName(err) });
                 continue;
             };
 
@@ -838,18 +847,27 @@ pub const Agent = struct {
             };
         }
 
-        if (records.items.len == 0) return;
+        if (records.items.len == 0) {
+            log.info("Warm start: no valid messages loaded (all skipped)", .{});
+            return;
+        }
+
+        log.info("Warm start: loaded {d} valid messages (examined up to {d} files)", .{ records.items.len, max_to_load });
 
         // Reverse to chronological order (oldest first)
-        std.mem.reverse(records.items);
+        std.mem.reverse(@TypeOf(records.items[0]), records.items);
 
         // Append messages to history in chronological order
+        var appended: usize = 0;
         for (records.items) |rec| {
             self.appendOwnedHistoryMessage(.{ .role = rec.role, .content = rec.content }, &[_]ParsedToolCall{}, null) catch |err| {
                 log.warn("Warm start: failed to append message to history: {s}", .{@errorName(err)});
                 self.allocator.free(rec.content);
+                continue;
             };
+            appended += 1;
         }
+        log.info("Warm start: complete, {d} messages appended to history", .{appended});
     }
 
     pub fn requestInterrupt(self: *Agent) void {
