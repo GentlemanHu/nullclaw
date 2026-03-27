@@ -11,6 +11,7 @@ const ToolResult = root.ToolResult;
 const JsonObjectMap = root.JsonObjectMap;
 const isPathSafe = @import("path_security.zig").isPathSafe;
 const isResolvedPathAllowed = @import("path_security.zig").isResolvedPathAllowed;
+const bootstrap_mod = @import("../bootstrap/root.zig");
 
 /// Default maximum file size to read before appending (10MB).
 const DEFAULT_MAX_FILE_SIZE: usize = 10 * 1024 * 1024;
@@ -20,6 +21,8 @@ pub const FileAppendTool = struct {
     workspace_dir: []const u8,
     allowed_paths: []const []const u8 = &.{},
     max_file_size: usize = DEFAULT_MAX_FILE_SIZE,
+    bootstrap_provider: ?bootstrap_mod.BootstrapProvider = null,
+    backend_name: []const u8 = "hybrid",
 
     pub const tool_name = "file_append";
     pub const tool_description = "Append content to the end of a file (creates the file if it doesn't exist)";
@@ -61,6 +64,49 @@ pub const FileAppendTool = struct {
         const ws_resolved: ?[]const u8 = std.fs.cwd().realpathAlloc(allocator, self.workspace_dir) catch null;
         defer if (ws_resolved) |wr| allocator.free(wr);
         const ws_str = ws_resolved orelse "";
+        const bootstrap_filename = bootstrapRootFilename(path);
+
+        if (bootstrap_filename) |filename| {
+            if (self.bootstrap_provider) |bp| {
+                if (!bootstrap_mod.backendUsesFiles(self.backend_name)) {
+                    const parent_to_check = std.fs.path.dirname(full_path) orelse full_path;
+                    const resolved_ancestor = resolveNearestExistingAncestor(allocator, parent_to_check) catch |err| {
+                        const msg = try std.fmt.allocPrint(allocator, "Failed to resolve file path: {} ({s})", .{ err, path });
+                        return ToolResult{ .success = false, .output = "", .error_msg = msg };
+                    };
+                    defer allocator.free(resolved_ancestor);
+
+                    if (!isResolvedPathAllowed(allocator, resolved_ancestor, ws_str, self.allowed_paths)) {
+                        return ToolResult.fail("Path is outside allowed areas");
+                    }
+
+                    const existing = try bp.load(allocator, filename);
+                    defer if (existing) |e| allocator.free(e);
+
+                    if (existing) |e| {
+                        if (e.len > self.max_file_size) {
+                            const msg = try std.fmt.allocPrint(
+                                allocator,
+                                "Failed to read file: FileTooBig (limit: {} bytes)",
+                                .{self.max_file_size},
+                            );
+                            return ToolResult{ .success = false, .output = "", .error_msg = msg };
+                        }
+                    }
+
+                    const new_contents = if (existing) |e|
+                        try std.mem.concat(allocator, u8, &.{ e, content })
+                    else
+                        try allocator.dupe(u8, content);
+                    defer allocator.free(new_contents);
+
+                    try bp.store(filename, new_contents);
+
+                    const msg = try std.fmt.allocPrint(allocator, "Appended {d} bytes to {s} (memory backend)", .{ content.len, path });
+                    return ToolResult{ .success = true, .output = msg };
+                }
+            }
+        }
 
         // Try to read existing content
         const existing = blk: {
@@ -123,6 +169,25 @@ pub const FileAppendTool = struct {
         return ToolResult{ .success = true, .output = msg };
     }
 };
+
+fn resolveNearestExistingAncestor(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
+    return std.fs.cwd().realpathAlloc(allocator, path) catch |err| switch (err) {
+        error.FileNotFound => {
+            const parent = std.fs.path.dirname(path) orelse return err;
+            if (std.mem.eql(u8, parent, path)) return err;
+            return resolveNearestExistingAncestor(allocator, parent);
+        },
+        else => return err,
+    };
+}
+
+fn bootstrapRootFilename(path: []const u8) ?[]const u8 {
+    if (std.fs.path.isAbsolute(path)) return null;
+    const basename = std.fs.path.basename(path);
+    if (!std.mem.eql(u8, basename, path)) return null;
+    if (!bootstrap_mod.isBootstrapFilename(basename)) return null;
+    return basename;
+}
 
 // ── Tests ───────────────────────────────────────────────────────────
 
@@ -256,6 +321,39 @@ test "FileAppendTool multiple appends" {
     const actual = try fs_compat.readFileAlloc(tmp_dir.dir, testing.allocator, "multi.txt", 4096);
     defer testing.allocator.free(actual);
     try testing.expectEqualStrings("ABC", actual);
+}
+
+test "FileAppendTool appends bootstrap file in memory backend" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const ws_path = try tmp_dir.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(ws_path);
+
+    var lru = @import("../memory/root.zig").InMemoryLruMemory.init(testing.allocator, 16);
+    defer lru.deinit();
+    var bp_impl = bootstrap_mod.MemoryBootstrapProvider.init(testing.allocator, lru.memory(), ws_path);
+    try bp_impl.provider().store("USER.md", "name: Igor");
+
+    var fat = FileAppendTool{
+        .workspace_dir = ws_path,
+        .allowed_paths = &.{ws_path},
+        .bootstrap_provider = bp_impl.provider(),
+        .backend_name = "sqlite",
+    };
+    const parsed = try root.parseTestArgs("{\"path\":\"USER.md\",\"content\":\"\\nrole: coder\"}");
+    defer parsed.deinit();
+    const result = try fat.execute(testing.allocator, parsed.value.object);
+    defer if (result.output.len > 0) testing.allocator.free(result.output);
+    defer if (result.error_msg) |e| testing.allocator.free(e);
+
+    try testing.expect(result.success);
+    try testing.expect(std.mem.indexOf(u8, result.output, "memory backend") != null);
+
+    const actual = try bp_impl.provider().load(testing.allocator, "USER.md") orelse return error.TestUnexpectedResult;
+    defer testing.allocator.free(actual);
+    try testing.expectEqualStrings("name: Igor\nrole: coder", actual);
+    try testing.expectError(error.FileNotFound, tmp_dir.dir.openFile("USER.md", .{}));
 }
 
 test "FileAppendTool schema has required params" {

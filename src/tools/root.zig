@@ -374,6 +374,8 @@ pub fn allTools(
         .workspace_dir = workspace_dir,
         .allowed_paths = opts.allowed_paths,
         .max_file_size = tc.max_file_size_bytes,
+        .bootstrap_provider = opts.bootstrap_provider,
+        .backend_name = opts.backend_name,
     };
     try list.append(allocator, fa.tool());
 
@@ -652,6 +654,8 @@ pub fn subagentTools(
         .workspace_dir = workspace_dir,
         .allowed_paths = opts.allowed_paths,
         .max_file_size = tc.max_file_size_bytes,
+        .bootstrap_provider = opts.bootstrap_provider,
+        .backend_name = opts.backend_name,
     };
     try list.append(allocator, fa.tool());
 
@@ -911,7 +915,7 @@ test "all tools wires http and web_search config into tool instances" {
     try std.testing.expect(saw_fetch);
 }
 
-test "all tools wire bootstrap provider into file_read for sqlite backends" {
+test "all tools wire bootstrap provider into bootstrap-aware file tools for sqlite backends" {
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
@@ -931,26 +935,47 @@ test "all tools wire bootstrap provider into file_read for sqlite backends" {
     });
     defer deinitTools(std.testing.allocator, tools);
 
-    var checked = false;
+    var checked_read = false;
+    var checked_append = false;
     for (tools) |t| {
-        if (!std.mem.eql(u8, t.name(), "file_read")) continue;
-        const ft: *file_read.FileReadTool = @ptrCast(@alignCast(t.ptr));
-        try std.testing.expect(ft.bootstrap_provider != null);
-        try std.testing.expectEqualStrings("sqlite", ft.backend_name);
+        if (std.mem.eql(u8, t.name(), "file_read")) {
+            const ft: *file_read.FileReadTool = @ptrCast(@alignCast(t.ptr));
+            try std.testing.expect(ft.bootstrap_provider != null);
+            try std.testing.expectEqualStrings("sqlite", ft.backend_name);
 
-        const parsed = try parseTestArgs("{\"path\": \"USER.md\"}");
-        defer parsed.deinit();
-        const result = try t.execute(std.testing.allocator, parsed.value.object);
-        defer if (result.output.len > 0) std.testing.allocator.free(result.output);
-        defer if (result.error_msg) |e| std.testing.allocator.free(e);
+            const parsed = try parseTestArgs("{\"path\": \"USER.md\"}");
+            defer parsed.deinit();
+            const result = try t.execute(std.testing.allocator, parsed.value.object);
+            defer if (result.output.len > 0) std.testing.allocator.free(result.output);
+            defer if (result.error_msg) |e| std.testing.allocator.free(e);
 
-        try std.testing.expect(result.success);
-        try std.testing.expectEqualStrings("name: Igor", result.output);
-        checked = true;
-        break;
+            try std.testing.expect(result.success);
+            try std.testing.expectEqualStrings("name: Igor", result.output);
+            checked_read = true;
+            continue;
+        }
+
+        if (std.mem.eql(u8, t.name(), "file_append")) {
+            const fa: *file_append.FileAppendTool = @ptrCast(@alignCast(t.ptr));
+            try std.testing.expect(fa.bootstrap_provider != null);
+            try std.testing.expectEqualStrings("sqlite", fa.backend_name);
+
+            const parsed = try parseTestArgs("{\"path\": \"USER.md\", \"content\": \"\\nrole: coder\"}");
+            defer parsed.deinit();
+            const result = try t.execute(std.testing.allocator, parsed.value.object);
+            defer if (result.output.len > 0) std.testing.allocator.free(result.output);
+            defer if (result.error_msg) |e| std.testing.allocator.free(e);
+
+            try std.testing.expect(result.success);
+            checked_append = true;
+        }
     }
 
-    try std.testing.expect(checked);
+    const appended = try provider.load(std.testing.allocator, "USER.md") orelse return error.TestUnexpectedResult;
+    defer std.testing.allocator.free(appended);
+    try std.testing.expectEqualStrings("name: Igor\nrole: coder", appended);
+    try std.testing.expect(checked_read);
+    try std.testing.expect(checked_append);
 }
 
 test "all tools wires subagent manager into spawn tool" {
@@ -1036,7 +1061,7 @@ test "subagent tools use configured shell and file limits" {
     try std.testing.expect(saw_file_edit_hashed);
 }
 
-test "subagent tools wire bootstrap provider into file_read for sqlite backends" {
+test "subagent tools wire bootstrap provider into bootstrap-aware file tools for sqlite backends" {
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
@@ -1056,17 +1081,38 @@ test "subagent tools wire bootstrap provider into file_read for sqlite backends"
     });
     defer deinitTools(std.testing.allocator, tools);
 
-    var checked = false;
+    var checked_read = false;
+    var checked_append = false;
     for (tools) |t| {
-        if (!std.mem.eql(u8, t.name(), "file_read")) continue;
-        const ft: *file_read.FileReadTool = @ptrCast(@alignCast(t.ptr));
-        try std.testing.expect(ft.bootstrap_provider != null);
-        try std.testing.expectEqualStrings("sqlite", ft.backend_name);
-        checked = true;
-        break;
+        if (std.mem.eql(u8, t.name(), "file_read")) {
+            const ft: *file_read.FileReadTool = @ptrCast(@alignCast(t.ptr));
+            try std.testing.expect(ft.bootstrap_provider != null);
+            try std.testing.expectEqualStrings("sqlite", ft.backend_name);
+            checked_read = true;
+            continue;
+        }
+
+        if (std.mem.eql(u8, t.name(), "file_append")) {
+            const fa: *file_append.FileAppendTool = @ptrCast(@alignCast(t.ptr));
+            try std.testing.expect(fa.bootstrap_provider != null);
+            try std.testing.expectEqualStrings("sqlite", fa.backend_name);
+
+            const parsed = try parseTestArgs("{\"path\": \"SOUL.md\", \"content\": \"\\nMore\"}");
+            defer parsed.deinit();
+            const result = try t.execute(std.testing.allocator, parsed.value.object);
+            defer if (result.output.len > 0) std.testing.allocator.free(result.output);
+            defer if (result.error_msg) |e| std.testing.allocator.free(e);
+
+            try std.testing.expect(result.success);
+            checked_append = true;
+        }
     }
 
-    try std.testing.expect(checked);
+    const appended = try provider.load(std.testing.allocator, "SOUL.md") orelse return error.TestUnexpectedResult;
+    defer std.testing.allocator.free(appended);
+    try std.testing.expectEqualStrings("## Soul\nMore", appended);
+    try std.testing.expect(checked_read);
+    try std.testing.expect(checked_append);
 }
 
 test "subagent tools wire http allowlist, response limit, and timeout" {
