@@ -1082,7 +1082,7 @@ fn loadVisibleSkills(allocator: std.mem.Allocator, workspace_dir: []const u8) !V
     errdefer if (community_base) |path| allocator.free(path);
 
     if (community_base) |base| {
-        if (yc.skills.listSkillsMerged(allocator, base, workspace_dir)) |skills| {
+        if (yc.skills.listSkillsMerged(allocator, base, workspace_dir, null)) |skills| {
             return .{
                 .skills = skills,
                 .community_base = base,
@@ -1093,7 +1093,7 @@ fn loadVisibleSkills(allocator: std.mem.Allocator, workspace_dir: []const u8) !V
         }
     }
 
-    const skills = try yc.skills.listSkills(allocator, workspace_dir);
+    const skills = try yc.skills.listSkills(allocator, workspace_dir, null);
     for (skills) |*skill| {
         yc.skills.checkRequirements(allocator, skill);
     }
@@ -2771,7 +2771,6 @@ fn runSignalChannel(allocator: std.mem.Allocator, args: []const []const u8, conf
         std.process.exit(1);
     };
     defer runtime.deinit();
-
     var loop_state = yc.channel_loop.SignalLoopState.init();
     yc.channel_loop.runSignalLoop(allocator, config, runtime, &loop_state, &sg);
 }
@@ -2912,7 +2911,6 @@ fn runTelegramChannel(allocator: std.mem.Allocator, args: []const []const u8, co
         telegram_config.allow_from;
 
     ensureChannelStartupCredentials(allocator, &config);
-
     std.debug.print("nullclaw telegram bot starting...\n", .{});
     config.printModelConfig();
     std.debug.print("  Temperature: {d:.1}\n", .{config.default_temperature});
@@ -2949,7 +2947,6 @@ fn runTelegramChannel(allocator: std.mem.Allocator, args: []const []const u8, co
         std.process.exit(1);
     };
     defer runtime.deinit();
-
     std.debug.print("  Tools: {d} loaded\n", .{runtime.tools.len});
     std.debug.print("  Memory: {s}\n", .{if (runtime.mem_rt != null) "enabled" else "disabled"});
     std.debug.print("  Polling for messages... (Ctrl+C to stop)\n\n", .{});

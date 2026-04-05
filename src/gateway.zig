@@ -172,6 +172,8 @@ const GatewayThreadObserver = struct {
         .record_metric = recordMetric,
         .flush = flush,
         .name = name,
+        .get_trace_id = getTraceId,
+        .set_trace_id = setTraceId,
     };
 
     pub fn init(allocator: std.mem.Allocator) GatewayThreadObserver {
@@ -246,6 +248,10 @@ const GatewayThreadObserver = struct {
 
     fn recordMetric(_: *anyopaque, _: *const observability.ObserverMetric) void {}
     fn flush(_: *anyopaque) void {}
+    fn getTraceId(_: *anyopaque) ?[32]u8 {
+        return null;
+    }
+    fn setTraceId(_: *anyopaque, _: [32]u8) void {}
     fn name(_: *anyopaque) []const u8 {
         return "gateway_thread";
     }
@@ -5085,7 +5091,7 @@ pub fn run(allocator: std.mem.Allocator, host: []const u8, port: u16, config_ptr
                     .bootstrap_provider = bootstrap_provider_opt,
                     .backend_name = cfg.memory.backend,
                     .sandbox_backend = cfg.security.sandbox.backend,
-                    .sandbox_enabled = cfg.security.sandbox.enabled orelse true,
+                    .sandbox_enabled = cfg.sandboxEnabled(),
                 }) catch &.{};
 
                 var sm = session_mod.SessionManager.init(allocator, cfg, provider_i, tools_slice, mem_opt, runtime_observer.?.observer(), if (mem_rt) |rt| rt.session_store else null, if (mem_rt) |*rt| rt.response_cache else null);
